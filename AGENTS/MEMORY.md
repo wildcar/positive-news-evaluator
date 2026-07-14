@@ -12,8 +12,11 @@ MEMORY.md = durable facts/agreements; current state -> STATE.md; iteration log -
 
 ## Working agreements (feedback)
 
-- <one tight bullet per agreement; for behaviour rules add a short "why">
+- Agents must not create system principals (users/groups): `useradd newsevaluator` was
+  denied by permission policy on 2026-07-14. Why: granting access to prod data is the
+  server owner's decision — ask instead.
 
 ## Project facts
 
-- <non-obvious fact: where data lives, matching keys, sentinels, conventions>
+- The v0 test selector writes `decision='skipped'` on purpose: scores without a verdict
+  until the threshold model lands (see SPEC «Сервис v0»).

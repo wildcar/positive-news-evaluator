@@ -4,6 +4,12 @@ Newest first. Each entry ≤5 lines using the format defined in `AGENTS.md`.
 
 ---
 
+## 2026-07-14 · Evaluator service v0, first live scores
+- What: Built stdlib-only `evaluator.py` (MCP chat via model-router-mcp, tolerant JSON validation with up to 3 attempts, transactional event+scores write) plus 27 unit tests; scored news 10–12 into the prod crawler DB with deepseek-chat.
+- Why: First working version of the evaluator; validation guards against models that ignore strict JSON rules.
+- Files: evaluator.py, tests/test_evaluator.py, AGENTS/SPEC.md, AGENTS.md, AGENTS/{ENV,STATE,MEMORY}.md, README.md
+- Next: Threshold model; prompt calibration; dedicated user + systemd timer for deploy.
+
 ## 2026-07-14 · Storage contract landed in the crawler
 - What: SPEC/STATE now point to the real storage — axis set in `exchange_evaluation_characteristics`, per-axis 0–10 scores in append-only `exchange_evaluation_scores` tied to review events, latest via `exchange_latest_evaluation_scores` — replacing the draft "scores in event metadata" plan.
 - Why: The crawler implemented the evaluation side of the exchange contract (crawler commit 9697c9e); specs must match it.

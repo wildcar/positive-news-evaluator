@@ -95,32 +95,36 @@ Recording rules — keep these a habit:
 
 Hard constraints and invariants this project must not violate. Keep each rule one line.
 
-- Respect the crawler's exchange contract (`~/repo/positive-news-crawler/docs/database-contract.md`): read `exchange_news_for_selection` / `exchange_latest_reviews`, append decisions only to `exchange_review_events`, never touch other tables.
+- Respect the crawler's exchange contract (`~/repo/positive-news-crawler/docs/database-contract.md`): read `exchange_news_for_selection` / `exchange_latest_reviews` / `exchange_evaluation_characteristics` / `exchange_latest_evaluation_scores`, append rows only to `exchange_review_events` and `exchange_evaluation_scores`, never touch other tables.
 - Scores are integers 0–10 on independent axes; the axis set is fixed in `AGENTS/SPEC.md` (v1) — changing it is a SPEC change first.
 - All Russian prose must pass the vendored humanizer-ru skill — no exceptions (see Language Rules).
+- `evaluator.py` stays stdlib-only: host deploy is a plain file copy to `/opt/news-evaluator`, no venv to maintain.
+- Creating system principals (users, groups) is the server owner's call — ask, don't create them from the agent.
 
 ## Stack & Commands
 
-Stack not chosen yet — the project is at the specification stage; there is no code to install, run, or test. Fill this in with the service skeleton iteration. Keep the full cheat-sheet in `AGENTS/ENV.md`; here keep only the essentials.
+Python 3.12, standard library only (sqlite3 + urllib): no dependencies to install, deploy is a file copy. Full cheat-sheet with the host run command: `AGENTS/ENV.md`.
 
 ```bash
-# install      — <how to install dependencies>
-# dev / run    — <how to start the app locally>
-# build        — <how to produce a production build>
-# test         — <how to run the test suite>
-# lint         — <how to lint / typecheck>
+# install      — nothing: Python 3.12 stdlib only
+# test         — python3 -m unittest discover -s tests
+# dry run      — ROUTER_AUTH_TOKEN=... python3 evaluator.py --dry-run --limit 1
+# host run     — under the newscrawler user from /opt/news-evaluator, see AGENTS/ENV.md
+# lint         — none yet
 ```
 
 ## Architecture
 
-Map of the codebase so an agent knows where things live. No code yet — fill in after the structure stabilizes.
-
 ```
+evaluator.py   the whole v0 service: MCP HTTP client, prompt builder (axes come
+               from the DB reference), reply validation, transactional DB writer
+tests/         unittest suite: JSON extraction, validation, DB write semantics
 AGENTS/        agent docs: SPEC (contract), STATE, HISTORY, MEMORY, ENV
 docs/adr/      architecture decision records
 ```
 
 ## Code Style
 
-- <language mode / formatter / linter conventions — fill in with the first code iteration>
+- Python 3.12 with type hints; stdlib only (see Project Rules). No formatter pinned yet.
+- Validation error strings are Russian (they are fed back to the model whose instruction is Russian); log messages are English.
 - Match the conventions of surrounding code: comment density, naming, idiom.

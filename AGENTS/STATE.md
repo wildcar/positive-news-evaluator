@@ -12,26 +12,33 @@ decide which items pass on.
 
 ## Now
 
-- Characteristic set v1 is fixed in `AGENTS/SPEC.md`: 20 axes, scale rules, draft model response format.
-- The crawler side of the storage contract is implemented and live on production since 2026-07-14 (crawler commit 9697c9e): the axis set is seeded into `exchange_evaluation_characteristics`, scores go to append-only `exchange_evaluation_scores` tied to review events, latest scores come from the `exchange_latest_evaluation_scores` view; client SQL is in the crawler's `docs/database-contract.md`.
-- Repo follows the agent-template harness (AGENTS.md + AGENTS/ + docs/adr).
-- humanizer-ru skill is vendored at `.claude/skills/humanizer-ru/` and mandatory for Russian prose (AGENTS.md → Language Rules).
-- No code yet; stack not chosen.
+- Service v0 works: `evaluator.py` (Python 3.12, stdlib only) reads the queue, asks a
+  model through model-router-mcp (`chat` tool, deepseek/deepseek-chat for tests) and
+  writes a `skipped` event plus 20 scores per news in one transaction.
+- First live run 2026-07-14: news 10–12 scored into the prod crawler DB
+  (selector `news-evaluator`, version `0.1.0+deepseek-chat`, cost ~$0.002, 0 failures).
+- Reply validation per SPEC («Проверка ответа модели»): fence/prose-tolerant JSON
+  extraction, key/type/range checks, up to 3 attempts with error feedback to the model.
+  27 unit tests green (`python3 -m unittest discover -s tests`).
+- `decision` is always `skipped` until the threshold model exists.
+- Runs on the host go under the `newscrawler` user from `/opt/news-evaluator`
+  (see `AGENTS/ENV.md`); a dedicated system user is pending the owner's approval.
 
 ## Next
 
-1. Threshold model: which threshold combinations pass a news item (min on selection axes,
-   max on service axes; likely «Россия» / «Международное» profiles, hermes-style).
-2. Evaluator prompt with scale anchors and calibration examples.
-3. Service skeleton: read `exchange_news_for_selection` and the
-   `exchange_evaluation_characteristics` reference, score, write the verdict to
-   `exchange_review_events` and per-axis scores to `exchange_evaluation_scores`
-   in one transaction, idempotency per the crawler contract.
+1. Threshold model: which threshold combinations pass a news item (min on selection
+   axes, max on service axes; likely «Россия» / «Международное» profiles, hermes-style).
+2. Prompt calibration: reference examples with expected scores, cross-model comparison
+   on one sample.
+3. Deploy hardening: dedicated system user in the `newscrawler` group, systemd timer,
+   unit registered in `/etc/newscrawler/update-services`.
 
 ## Open questions
 
-- Stack for the service (language / runtime / LLM client) — not chosen.
-- Exact shape of threshold profiles and where they are configured.
+- Dedicated system user for the evaluator — needs the server owner (agent may not
+  create principals; see `AGENTS/MEMORY.md`).
+- Threshold profiles: exact shape and where they are configured.
+- Long-term model choice; deepseek-chat is only the test model.
 
 ## Deferred
 
