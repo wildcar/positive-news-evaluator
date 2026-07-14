@@ -13,7 +13,7 @@ decide which items pass on.
 ## Now
 
 - Characteristic set v1 is fixed in `AGENTS/SPEC.md`: 20 axes, scale rules, draft model response format.
-- The crawler side of the storage contract is implemented (crawler commit 9697c9e, production migration pending): the axis set is seeded into `exchange_evaluation_characteristics`, scores go to append-only `exchange_evaluation_scores` tied to review events, latest scores come from the `exchange_latest_evaluation_scores` view; client SQL is in the crawler's `docs/database-contract.md`.
+- The crawler side of the storage contract is implemented and live on production since 2026-07-14 (crawler commit 9697c9e): the axis set is seeded into `exchange_evaluation_characteristics`, scores go to append-only `exchange_evaluation_scores` tied to review events, latest scores come from the `exchange_latest_evaluation_scores` view; client SQL is in the crawler's `docs/database-contract.md`.
 - Repo follows the agent-template harness (AGENTS.md + AGENTS/ + docs/adr).
 - humanizer-ru skill is vendored at `.claude/skills/humanizer-ru/` and mandatory for Russian prose (AGENTS.md → Language Rules).
 - No code yet; stack not chosen.
