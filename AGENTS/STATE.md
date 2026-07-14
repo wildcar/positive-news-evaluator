@@ -14,6 +14,7 @@ decide which items pass on.
 
 - Characteristic set v1 is fixed in `AGENTS/SPEC.md`: 20 axes, scale rules, draft model response format.
 - Repo follows the agent-template harness (AGENTS.md + AGENTS/ + docs/adr).
+- humanizer-ru skill is vendored at `.claude/skills/humanizer-ru/` and mandatory for Russian prose (AGENTS.md → Language Rules).
 - No code yet; stack not chosen.
 
 ## Next

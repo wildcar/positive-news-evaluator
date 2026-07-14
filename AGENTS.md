@@ -26,6 +26,7 @@ positive-news-evaluator — AI agent that scores news collected by Positive News
 | `README.md` | Public-facing readme: what the project is, how to run it locally. |
 | `docs/` | Domain / reference docs. Read on demand when a task touches that area. |
 | `docs/adr/` | Architecture Decision Records — one file per significant decision (see `docs/adr/TEMPLATE.md`). |
+| `.claude/skills/humanizer-ru/SKILL.md` | Vendored humanizer-ru skill — mandatory for all Russian prose (see Language Rules). |
 
 ## Startup Checklist
 
@@ -88,6 +89,7 @@ Recording rules — keep these a habit:
 - Conversation with the user: Russian.
 - End-user UI text: Russian, with ability to extend to other languages.
 - Existing docs already written in another language are an established contract — keep editing them in that language; don't silently translate. In this repo `AGENTS/SPEC.md` is in Russian.
+- Mandatory: any Russian prose an agent writes or edits (docs, UI strings, LLM prompt texts, user-facing comments) goes through the humanizer-ru skill vendored at `.claude/skills/humanizer-ru/SKILL.md` (upstream: https://github.com/smixs/humanizer-ru, v1.2.0). Claude Code auto-loads it as a project skill; other agents read that file and apply its rules before delivering the text.
 
 ## Project Rules
 
@@ -95,6 +97,7 @@ Hard constraints and invariants this project must not violate. Keep each rule on
 
 - Respect the crawler's exchange contract (`~/repo/positive-news-crawler/docs/database-contract.md`): read `exchange_news_for_selection` / `exchange_latest_reviews`, append decisions only to `exchange_review_events`, never touch other tables.
 - Scores are integers 0–10 on independent axes; the axis set is fixed in `AGENTS/SPEC.md` (v1) — changing it is a SPEC change first.
+- All Russian prose must pass the vendored humanizer-ru skill — no exceptions (see Language Rules).
 
 ## Stack & Commands
 

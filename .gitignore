@@ -1,5 +1,7 @@
-# Local agent / IDE state — do not commit
-.claude/
+# Local agent / IDE state — do not commit.
+# Exception: vendored project skills must travel with the repo.
+.claude/*
+!.claude/skills/
 
 # Environment / secrets
 .env
