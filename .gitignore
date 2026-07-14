@@ -14,3 +14,7 @@ Thumbs.db
 *.swp
 
 # Add project-specific ignores below (build output, dependencies, caches, ...)
+
+# Python bytecode
+__pycache__/
+*.pyc
