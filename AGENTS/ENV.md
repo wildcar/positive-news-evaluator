@@ -6,7 +6,7 @@ Update whenever a new tool, credential, or host-specific quirk is learned.
 ## Host
 
 - **Dev**: Linux (kernel 6.8) / bash / user `keeper` / repo at `/home/keeper/repo/positive-news-evaluator`
-- **Prod**: same host. The script is copied to `/opt/news-evaluator/evaluator.py` (`/home/keeper` is 750, other users cannot read the repo). Per the crawler's exchange contract, direct SQLite clients run on this host under a user in the `newscrawler` group; test runs use the `newscrawler` user itself — a dedicated system user needs the server owner (see `AGENTS/MEMORY.md`).
+- **Prod**: same host. Code at `/opt/news-evaluator/evaluator.py`, config at `/etc/news-evaluator/news-evaluator.env` (`/home/keeper` is 750, other users cannot read the repo). Permanent mode: systemd `news-evaluator.timer` runs a batch every 10 min under the dedicated `newsevaluator` user (`newscrawler` group). Everything is installed by `sudo bash deploy/install.sh`, which the **owner must run** — agents may not create system users (see `AGENTS/MEMORY.md`). Until then manual batches run under `newscrawler`.
 
 ## Tools
 
@@ -37,10 +37,19 @@ python3 -m unittest discover -s tests          # unit tests, no network
 ### Prod
 
 ```
-# deploy (after changing evaluator.py)
-sudo install -m 0644 evaluator.py /opt/news-evaluator/evaluator.py
+# install / update everything (owner runs this: creates the newsevaluator user,
+# copies code + units, auto-fills the router token, enables the timer)
+sudo bash deploy/install.sh
 
-# run a batch (token read via sudo, never echo it)
+# status & logs
+systemctl list-timers news-evaluator.timer
+sudo journalctl -u news-evaluator.service -n 50
+sudo systemctl start news-evaluator.service    # run one batch right now
+
+# model / batch tuning: edit /etc/news-evaluator/news-evaluator.env
+# (EVALUATOR_MODEL empty -> router picks by provider/tier), applies next run
+
+# manual batch under newscrawler (fallback while the dedicated user is absent)
 TOKEN=$(sudo grep '^AUTH_TOKEN=' /opt/model-router-mcp/.env | cut -d= -f2-)
 sudo -u newscrawler env ROUTER_AUTH_TOKEN="$TOKEN" \
   bash -c 'umask 0007; python3 /opt/news-evaluator/evaluator.py --limit 3'

@@ -14,6 +14,7 @@ from evaluator import (
     Config,
     EvaluationInvalid,
     _coerce_score,
+    build_chat_arguments,
     extract_json_object,
     validate_evaluation,
     write_review,
@@ -202,28 +203,60 @@ class WriteReviewTests(unittest.TestCase):
         self.con.close()
 
     def test_event_and_scores_written(self):
-        event_id = write_review(self.con, self.cfg, 5, full_scores(), "комментарий")
+        event_id = write_review(
+            self.con, self.cfg, 5, full_scores(), "комментарий", "actual-model"
+        )
         event = self.con.execute(
             "SELECT * FROM exchange_review_events WHERE id = ?", (event_id,)
         ).fetchone()
         self.assertEqual(event["decision"], "skipped")
         self.assertIsNone(event["score"])
         self.assertEqual(event["reason"], "комментарий")
-        self.assertEqual(event["selector_version"], "0.1.0+test-model")
+        # the model that answered is recorded, not the configured one
+        self.assertEqual(
+            event["selector_version"], f"{evaluator.EVALUATOR_VERSION}+actual-model"
+        )
         rows = self.con.execute(
             "SELECT COUNT(*) FROM exchange_evaluation_scores WHERE review_event_id = ?",
             (event_id,),
         ).fetchone()[0]
         self.assertEqual(rows, 20)
 
+    def test_unknown_model_still_recorded(self):
+        event_id = write_review(self.con, self.cfg, 5, full_scores(), "", "")
+        event = self.con.execute(
+            "SELECT selector_version FROM exchange_review_events WHERE id = ?", (event_id,)
+        ).fetchone()
+        self.assertEqual(
+            event["selector_version"], f"{evaluator.EVALUATOR_VERSION}+router-choice"
+        )
+
     def test_foreign_key_enforced(self):
         scores = full_scores()
         scores["unknown_axis"] = 5
         del scores["promo"]
         with self.assertRaises(sqlite3.IntegrityError):
-            write_review(self.con, self.cfg, 5, scores, "")
+            write_review(self.con, self.cfg, 5, scores, "", "actual-model")
         events = self.con.execute("SELECT COUNT(*) FROM exchange_review_events").fetchone()[0]
         self.assertEqual(events, 0)  # transaction rolled back entirely
+
+
+class ChatArgumentsTests(unittest.TestCase):
+    MESSAGES = [{"role": "user", "content": "hi"}]
+
+    def test_all_hints_passed(self):
+        cfg = Config(model_id="m1", provider="p1", tier="cheap")
+        args = build_chat_arguments(cfg, self.MESSAGES)
+        self.assertEqual(args["model_id"], "m1")
+        self.assertEqual(args["provider"], "p1")
+        self.assertEqual(args["tier"], "cheap")
+
+    def test_empty_hints_omitted_router_decides(self):
+        cfg = Config(model_id="", provider="", tier="")
+        args = build_chat_arguments(cfg, self.MESSAGES)
+        for hint in ("model_id", "provider", "tier"):
+            self.assertNotIn(hint, args)
+        self.assertEqual(args["messages"], self.MESSAGES)
 
 
 if __name__ == "__main__":

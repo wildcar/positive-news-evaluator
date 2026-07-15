@@ -13,8 +13,9 @@ MEMORY.md = durable facts/agreements; current state -> STATE.md; iteration log -
 ## Working agreements (feedback)
 
 - Agents must not create system principals (users/groups): `useradd newsevaluator` was
-  denied by permission policy on 2026-07-14. Why: granting access to prod data is the
-  server owner's decision — ask instead.
+  denied by permission policy on 2026-07-14 and again on 2026-07-15 even after the
+  owner approved the permanent deploy in chat. Why: granting access to prod data must
+  be executed by the owner personally — prepare an installer and hand it over instead.
 
 ## Project facts
 

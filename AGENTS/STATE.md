@@ -23,24 +23,29 @@ decide which items pass on.
   extraction, key/type/range checks, up to 3 attempts with error feedback to the model.
   27 unit tests green (`python3 -m unittest discover -s tests`).
 - `decision` is always `skipped` until the threshold model exists.
-- Runs on the host go under the `newscrawler` user from `/opt/news-evaluator`
-  (see `AGENTS/ENV.md`); a dedicated system user is pending the owner's approval.
+- v0.2.0: the model is not hard-coded — `EVALUATOR_MODEL`/`EVALUATOR_PROVIDER`/
+  `EVALUATOR_TIER` come from `/etc/news-evaluator/news-evaluator.env`; empty model
+  delegates the choice to the router; each event's `selector_version` records the
+  model that actually answered. Verified live (dry run, news 113).
+- Permanent deploy is fully prepared in `deploy/` (oneshot service + 10-min timer +
+  idempotent `install.sh` that creates the `newsevaluator` user and auto-fills the
+  router token) — **waiting for the owner to run** `sudo bash deploy/install.sh`;
+  the permission policy blocks agents from creating system users even with chat
+  approval. Until then manual batches run under `newscrawler`.
 
 ## Next
 
-1. Threshold model: which threshold combinations pass a news item (min on selection
+1. Owner runs `sudo bash deploy/install.sh`; then verify the first timer runs
+   (`journalctl -u news-evaluator.service`) and events under `0.2.0+…`.
+2. Threshold model: which threshold combinations pass a news item (min on selection
    axes, max on service axes; likely «Россия» / «Международное» profiles, hermes-style).
-2. Prompt calibration: reference examples with expected scores, cross-model comparison
+3. Prompt calibration: reference examples with expected scores, cross-model comparison
    on one sample.
-3. Deploy hardening: dedicated system user in the `newscrawler` group, systemd timer,
-   unit registered in `/etc/newscrawler/update-services`.
 
 ## Open questions
 
-- Dedicated system user for the evaluator — needs the server owner (agent may not
-  create principals; see `AGENTS/MEMORY.md`).
 - Threshold profiles: exact shape and where they are configured.
-- Long-term model choice; deepseek-chat is only the test model.
+- Long-term model choice; deepseek-chat is only the test model (swap via env file).
 
 ## Deferred
 

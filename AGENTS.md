@@ -109,7 +109,8 @@ Python 3.12, standard library only (sqlite3 + urllib): no dependencies to instal
 # install      — nothing: Python 3.12 stdlib only
 # test         — python3 -m unittest discover -s tests
 # dry run      — ROUTER_AUTH_TOKEN=... python3 evaluator.py --dry-run --limit 1
-# host run     — under the newscrawler user from /opt/news-evaluator, see AGENTS/ENV.md
+# host deploy  — sudo bash deploy/install.sh (user, config, systemd timer)
+# host status  — systemctl list-timers news-evaluator.timer; journalctl -u news-evaluator.service
 # lint         — none yet
 ```
 
@@ -119,6 +120,7 @@ Python 3.12, standard library only (sqlite3 + urllib): no dependencies to instal
 evaluator.py   the whole v0 service: MCP HTTP client, prompt builder (axes come
                from the DB reference), reply validation, transactional DB writer
 tests/         unittest suite: JSON extraction, validation, DB write semantics
+deploy/        host install: systemd service + timer, env template, install.sh
 AGENTS/        agent docs: SPEC (contract), STATE, HISTORY, MEMORY, ENV
 docs/adr/      architecture decision records
 ```

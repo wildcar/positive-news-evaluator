@@ -30,7 +30,7 @@ from typing import Any
 
 log = logging.getLogger("news-evaluator")
 
-EVALUATOR_VERSION = "0.1.0"
+EVALUATOR_VERSION = "0.2.0"
 AXIS_COUNT = 20
 MAX_MODEL_ATTEMPTS = 3
 MAX_BODY_CHARS = 8000
@@ -155,17 +155,21 @@ def call_tool(
 
 @dataclass
 class Config:
+    """Everything comes from the environment; the model is NOT hard-coded.
+
+    An empty model_id delegates model choice to the router (provider/tier
+    hints); the model that actually answered is read from the reply and
+    recorded in selector_version per event.
+    """
+
     db_path: str = "/var/lib/newscrawler/newscrawler.sqlite3"
     router_url: str = "http://127.0.0.1:8088/mcp"
     router_token: str = ""
     provider: str = "deepseek"
     model_id: str = "deepseek-chat"
+    tier: str = ""
     selector_name: str = "news-evaluator"
     params: dict[str, Any] = field(default_factory=lambda: {"temperature": 0.3, "max_tokens": 1000})
-
-    @property
-    def selector_version(self) -> str:
-        return f"{EVALUATOR_VERSION}+{self.model_id}"
 
     @classmethod
     def from_env(cls, env: dict[str, str] = os.environ) -> "Config":
@@ -175,21 +179,32 @@ class Config:
         cfg.router_token = env.get("ROUTER_AUTH_TOKEN", cfg.router_token)
         cfg.provider = env.get("EVALUATOR_PROVIDER", cfg.provider)
         cfg.model_id = env.get("EVALUATOR_MODEL", cfg.model_id)
+        cfg.tier = env.get("EVALUATOR_TIER", cfg.tier)
         cfg.selector_name = env.get("SELECTOR_NAME", cfg.selector_name)
         return cfg
+
+
+def build_chat_arguments(cfg: Config, messages: list[dict[str, str]]) -> dict[str, Any]:
+    """Router hints are optional: empty ones are omitted, the router decides."""
+    arguments: dict[str, Any] = {
+        "external_user_id": cfg.selector_name,
+        "messages": messages,
+        "params": cfg.params,
+    }
+    if cfg.model_id:
+        arguments["model_id"] = cfg.model_id
+    if cfg.provider:
+        arguments["provider"] = cfg.provider
+    if cfg.tier:
+        arguments["tier"] = cfg.tier
+    return arguments
 
 
 def chat(cfg: Config, messages: list[dict[str, str]]) -> dict[str, Any]:
     reply = call_tool(
         cfg.router_url,
         "chat",
-        {
-            "external_user_id": cfg.selector_name,
-            "messages": messages,
-            "model_id": cfg.model_id,
-            "provider": cfg.provider,
-            "params": cfg.params,
-        },
+        build_chat_arguments(cfg, messages),
         token=cfg.router_token or None,
     )
     if not isinstance(reply, dict) or not isinstance(reply.get("text"), str):
@@ -445,16 +460,22 @@ def write_review(
     news_id: int,
     scores: dict[str, int],
     comment: str,
+    model_id: str,
 ) -> int:
-    """Insert the review event and all axis scores in one transaction."""
-    idempotency_key = f"{news_id}:{cfg.selector_version}:{uuid.uuid4().hex[:12]}"
+    """Insert the review event and all axis scores in one transaction.
+
+    model_id is the model that actually produced the scores (from the router
+    reply), so selector_version stays truthful when the configured model changes.
+    """
+    selector_version = f"{EVALUATOR_VERSION}+{model_id or 'router-choice'}"
+    idempotency_key = f"{news_id}:{selector_version}:{uuid.uuid4().hex[:12]}"
     created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     for attempt in range(DB_LOCK_RETRIES):
         try:
             with con:
                 cur = con.execute(
                     INSERT_EVENT_SQL,
-                    (news_id, comment, cfg.selector_name, cfg.selector_version,
+                    (news_id, comment, cfg.selector_name, selector_version,
                      idempotency_key, created_at),
                 )
                 event_id = cur.fetchone()[0]
@@ -504,7 +525,10 @@ def run(cfg: Config, limit: int, dry_run: bool) -> int:
                     ensure_ascii=False,
                 ))
             else:
-                event_id = write_review(con, cfg, news["news_id"], scores, comment)
+                model_used = reply.get("model_id") or cfg.model_id
+                event_id = write_review(
+                    con, cfg, news["news_id"], scores, comment, model_used
+                )
                 log.info("news %s: event %d written: %s", news["news_id"], event_id, title)
             done += 1
         log.info(
