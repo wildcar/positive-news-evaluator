@@ -4,6 +4,12 @@ Newest first. Each entry ≤5 lines using the format defined in `AGENTS.md`.
 
 ---
 
+## 2026-07-15 · Permanent mode live
+- What: Owner ran `deploy/install.sh`: `newsevaluator` user created, timer active (25 news / 10 min), first batch 25/25 with 0 failures, events recorded as `0.2.0+deepseek-chat`.
+- Why: Ships the deferred deploy step; the evaluator now runs unattended.
+- Files: AGENTS/STATE.md (snapshot refresh only)
+- Next: Threshold model; prompt calibration.
+
 ## 2026-07-15 · Permanent deploy prepared, model un-hardcoded (v0.2.0)
 - What: `selector_version` now records the model that actually answered; empty `EVALUATOR_MODEL` delegates choice to the router (provider/tier hints); added `deploy/` — oneshot service + 10-min timer + env template + idempotent `install.sh` (creates the dedicated user, auto-fills the router token, registers in update-services).
 - Why: Owner asked to make the service permanent with the model swappable without code edits.

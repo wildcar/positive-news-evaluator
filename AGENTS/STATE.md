@@ -27,19 +27,17 @@ decide which items pass on.
   `EVALUATOR_TIER` come from `/etc/news-evaluator/news-evaluator.env`; empty model
   delegates the choice to the router; each event's `selector_version` records the
   model that actually answered. Verified live (dry run, news 113).
-- Permanent deploy is fully prepared in `deploy/` (oneshot service + 10-min timer +
-  idempotent `install.sh` that creates the `newsevaluator` user and auto-fills the
-  router token) — **waiting for the owner to run** `sudo bash deploy/install.sh`;
-  the permission policy blocks agents from creating system users even with chat
-  approval. Until then manual batches run under `newscrawler`.
+- Permanent mode is LIVE since 2026-07-15: the owner ran `deploy/install.sh`,
+  `news-evaluator.timer` fires every 10 min under the dedicated `newsevaluator` user
+  (25 news per batch, ~3600/day capacity vs ~500/day inflow). First timer batch:
+  25/25, 0 failures, sidecar group perms intact. DB now holds 103 events under
+  `0.1.0+deepseek-chat` and the permanent stream under `0.2.0+deepseek-chat`.
 
 ## Next
 
-1. Owner runs `sudo bash deploy/install.sh`; then verify the first timer runs
-   (`journalctl -u news-evaluator.service`) and events under `0.2.0+…`.
-2. Threshold model: which threshold combinations pass a news item (min on selection
+1. Threshold model: which threshold combinations pass a news item (min on selection
    axes, max on service axes; likely «Россия» / «Международное» profiles, hermes-style).
-3. Prompt calibration: reference examples with expected scores, cross-model comparison
+2. Prompt calibration: reference examples with expected scores, cross-model comparison
    on one sample.
 
 ## Open questions
