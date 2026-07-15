@@ -15,8 +15,10 @@ decide which items pass on.
 - Service v0 works: `evaluator.py` (Python 3.12, stdlib only) reads the queue, asks a
   model through model-router-mcp (`chat` tool, deepseek/deepseek-chat for tests) and
   writes a `skipped` event plus 20 scores per news in one transaction.
-- First live run 2026-07-14: news 10–12 scored into the prod crawler DB
-  (selector `news-evaluator`, version `0.1.0+deepseek-chat`, cost ~$0.002, 0 failures).
+- Live runs: 103 news scored into the prod crawler DB as of 2026-07-15 (selector
+  `news-evaluator`, version `0.1.0+deepseek-chat`); the 100-item batch took ~4 min,
+  cost $0.07, 0 failures, 0 validation retries. Naive cut positivity>=6 &
+  negativity<=3 passes 23 of 103 — feed averages: positivity 2.9, negativity 5.5.
 - Reply validation per SPEC («Проверка ответа модели»): fence/prose-tolerant JSON
   extraction, key/type/range checks, up to 3 attempts with error feedback to the model.
   27 unit tests green (`python3 -m unittest discover -s tests`).
