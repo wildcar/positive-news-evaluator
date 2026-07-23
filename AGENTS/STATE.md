@@ -35,14 +35,23 @@ decide which items pass on.
 
 ## Next
 
-1. Threshold model: which threshold combinations pass a news item (min on selection
-   axes, max on service axes; likely «Россия» / «Международное» profiles, hermes-style).
-2. Prompt calibration: reference examples with expected scores, cross-model comparison
-   on one sample.
+1. Implement the `default` selection profile (SPEC «Пороговая модель»): apply it at
+   scoring time and add a backfill pass over already-`skipped` news that writes a
+   correcting `positive`/`not_positive` event. Rule: positivity≥8, heroism≤4,
+   clickbait≤4, promo≤4, and at least one of pride_humanity/pride_russia/inspiration/
+   beauty/interestingness/surprise/uniqueness ≥9.
+2. Crawler-side change (separate repo): delete rejected news older than 3 days.
+3. Preparation stage (label «Подготовлено»): download illustrations with captions,
+   Russian retelling, HTML page, in a new evaluator-owned SQLite + media dir.
+4. Publication stage (label «Опубликовано») — next project step, platforms TBD.
+5. Prompt calibration and soft profiles («Россия» / «Международное»).
 
 ## Open questions
 
-- Threshold profiles: exact shape and where they are configured.
+- Selection rule is strict: feed positivity averages ~3, so `default` will pass very
+  few items. Confirm this is intended vs adding a softer profile alongside it.
+- Retelling: generate fresh vs seed from the crawler's existing `news_translations`.
+- Publication platforms, formats, and credentials (deferred to the publication step).
 - Long-term model choice; deepseek-chat is only the test model (swap via env file).
 
 ## Deferred

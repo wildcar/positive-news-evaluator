@@ -4,6 +4,13 @@ Newest first. Each entry ≤5 lines using the format defined in `AGENTS.md`.
 
 ---
 
+## 2026-07-23 · Selection rule and post-selection pipeline specced
+- What: Fixed the `default` selection profile (positivity≥8, heroism/clickbait/promo≤4, one bright axis ≥9 → «Отобрано»), the label lifecycle, the «Подготовлено» preparation stage (illustrations+captions, RU retelling, HTML) in an evaluator-owned DB, and the publication placeholder.
+- Why: User request to define selection thresholds and the downstream prepare/publish flow.
+- Files: AGENTS/SPEC.md, AGENTS/STATE.md
+- Next: Implement the profile in code plus a backfill pass over `skipped` events.
+- Fixes-on-the-fly: removed a stray duplicate `news-evaluator` repo I had created before finding this one.
+
 ## 2026-07-15 · Permanent mode live
 - What: Owner ran `deploy/install.sh`: `newsevaluator` user created, timer active (25 news / 10 min), first batch 25/25 with 0 failures, events recorded as `0.2.0+deepseek-chat`.
 - Why: Ships the deferred deploy step; the evaluator now runs unattended.

@@ -21,3 +21,12 @@ MEMORY.md = durable facts/agreements; current state -> STATE.md; iteration log -
 
 - The v0 test selector writes `decision='skipped'` on purpose: scores without a verdict
   until the threshold model lands (see SPEC «Сервис v0»).
+- The `default` selection rule (owner's spec, 2026-07-23): positivity≥8 AND heroism≤4
+  AND clickbait≤4 AND promo≤4 AND at least one of pride_humanity/pride_russia/inspiration/
+  beauty/interestingness/surprise/uniqueness ≥9. Note heroism is used as an UPPER gate
+  here even though its reference `threshold_direction` is `lower_bound`.
+- Post-selection artifacts (prepared HTML, downloaded illustrations, retelling) and the
+  «Подготовлено»/«Опубликовано» labels live in an evaluator-owned DB, NOT the crawler DB:
+  the exchange contract forbids clients from writing any table but the two exchange ones.
+- Deleting rejected news is the crawler's job (its maintenance), not the evaluator's —
+  same contract limit. The evaluator only supplies the `not_positive` verdict.
