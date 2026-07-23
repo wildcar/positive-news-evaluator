@@ -20,37 +20,42 @@ from publisher import (
     build_tg_caption,
     build_vk_message,
     encode_multipart,
-    extract_paragraphs,
     input_val,
     open_own_db,
+    parse_markdown,
     publication_status,
     source_name_from_url,
     _abs_url,
 )
 
-PAGE_HTML = (
-    "<h1>Заголовок</h1>\n"
-    "<p>Первый абзац с &laquo;кавычками&raquo; и амперсандом &amp; знаком.</p>\n"
-    '<figure><img src="../media/1/1.jpg" alt="c"><figcaption>c</figcaption></figure>\n'
-    "<p>Второй абзац.</p>\n"
-    "<p>Третий абзац.</p>\n"
-    '<footer>Источник: <a href="https://site.test/a">site.test</a></footer>'
+MARKDOWN_DOC = (
+    "# Заголовок\n\n"
+    "Первый абзац с «кавычками» и амперсандом & знаком.\n\n"
+    "Второй абзац.\n\n"
+    "Третий абзац.\n\n"
+    "Источник: [site.test](https://site.test/a)"
 )
 
 
-class ExtractParagraphsTests(unittest.TestCase):
-    def test_pulls_paragraphs_and_unescapes(self):
-        paras = extract_paragraphs(PAGE_HTML)
+class ParseMarkdownTests(unittest.TestCase):
+    def test_parses_title_paragraphs_source(self):
+        title, paras, url, name = parse_markdown(MARKDOWN_DOC)
+        self.assertEqual(title, "Заголовок")
         self.assertEqual(len(paras), 3)
         self.assertEqual(paras[0], "Первый абзац с «кавычками» и амперсандом & знаком.")
         self.assertEqual(paras[2], "Третий абзац.")
+        self.assertEqual((url, name), ("https://site.test/a", "site.test"))
 
-    def test_ignores_footer_and_figcaption(self):
-        # Only <p> blocks count; the source footer must not leak into paragraphs.
-        self.assertTrue(all("Источник" not in p for p in extract_paragraphs(PAGE_HTML)))
+    def test_source_line_not_in_paragraphs(self):
+        _, paras, _, _ = parse_markdown(MARKDOWN_DOC)
+        self.assertTrue(all("Источник" not in p for p in paras))
 
     def test_empty(self):
-        self.assertEqual(extract_paragraphs(""), [])
+        self.assertEqual(parse_markdown(""), ("", [], "", ""))
+
+    def test_source_name_falls_back_to_host(self):
+        _, _, url, name = parse_markdown("# T\n\nabc\n\nИсточник: [](https://www.foo.test/x)")
+        self.assertEqual((url, name), ("https://www.foo.test/x", "foo.test"))
 
 
 class SourceNameTests(unittest.TestCase):
@@ -169,27 +174,17 @@ class RunLoopTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        base = Path(self.tmp.name)
-        self.own_path = str(base / "own.sqlite3")
-        self.news_path = str(base / "news.sqlite3")
-        # seed the news DB with the exchange view columns the publisher reads
-        news = sqlite3.connect(self.news_path)
-        news.execute("CREATE TABLE exchange_news_for_selection (news_id INTEGER, primary_url TEXT)")
-        news.execute("INSERT INTO exchange_news_for_selection VALUES (1, 'https://site.test/a')")
-        news.commit()
-        news.close()
-        # seed one prepared item
+        self.own_path = str(Path(self.tmp.name) / "own.sqlite3")
         own = open_own_db(self.own_path)
         own.execute(
-            "INSERT INTO prepared_item (news_id, status, retold_title, retold_body_html, prepared_at) "
-            "VALUES (1, 'prepared', 'T', '<p>para one</p><p>para two</p>', '2026-07-23T10:00:00')"
+            "INSERT INTO prepared_item (news_id, status, retold_title, retold_body_md, prepared_at) "
+            "VALUES (1, 'prepared', 'T', ?, '2026-07-23T10:00:00')",
+            ("# T\n\npara one\n\npara two\n\nИсточник: [site.test](https://site.test/a)",),
         )
         own.commit()
         own.close()
-        self.cfg = PublisherConfig(
-            own_db=self.own_path, news_db=self.news_path,
-            tg_token="tok", site_password="pw",  # telegram + site enabled, vk off
-        )
+        # telegram + site enabled, vk off
+        self.cfg = PublisherConfig(own_db=self.own_path, tg_token="tok", site_password="pw")
         self._orig = dict(publisher.ADAPTERS)
 
     def tearDown(self):

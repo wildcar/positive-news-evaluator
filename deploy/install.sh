@@ -18,11 +18,11 @@ install -m 0644 "$REPO_DIR/evaluator.py" /opt/news-evaluator/evaluator.py
 install -m 0644 "$REPO_DIR/preparer.py" /opt/news-evaluator/preparer.py
 install -m 0644 "$REPO_DIR/publisher.py" /opt/news-evaluator/publisher.py
 
-# Evaluator-owned state: own DB, downloaded images, generated HTML pages.
-# Kept separate from the crawler DB by contract; owned by the service user.
+# Evaluator-owned state: own DB and downloaded images (the retelling itself is
+# markdown in the DB). Kept separate from the crawler DB by contract; owned by
+# the service user.
 install -d -o newsevaluator -g newsevaluator -m 0750 /var/lib/news-evaluator
 install -d -o newsevaluator -g newsevaluator -m 0750 /var/lib/news-evaluator/media
-install -d -o newsevaluator -g newsevaluator -m 0750 /var/lib/news-evaluator/pages
 
 install -d -m 0755 /etc/news-evaluator
 ENV_FILE=/etc/news-evaluator/news-evaluator.env

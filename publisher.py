@@ -16,9 +16,10 @@ Platforms (each turns on only when its secrets are present in the config):
 Idempotency: each (news_id, platform) send is recorded in the `publication`
 table; a re-run skips platforms already 'ok' and retries only the failed ones.
 
-Single-file, stdlib-only. Reuses evaluator.open_db (news DB reader) and the
-preparer's own-DB schema. The crawler exchange contract forbids writing anything
-but the two exchange tables, so publication state lives in the evaluator's own DB.
+Single-file, stdlib-only. Shares the preparer's own-DB schema and markdown; it
+reads only the evaluator's own DB (the crawler DB is not touched here). Everything
+the publisher needs — title, paragraphs, source, images — comes from the prepared
+markdown and the illustration table.
 
 Behavior: AGENTS/SPEC.md, section «Публикация (метка "Опубликовано")».
 """
@@ -45,8 +46,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-import evaluator  # news-DB reader (open_db)
-import preparer   # own-DB schema (OWN_SCHEMA_SQL)
+import preparer   # own-DB schema + migration, markdown builder
 
 log = logging.getLogger("news-publisher")
 
@@ -58,7 +58,7 @@ EGEYA_EMPTY_TAGS_HASH = "d41d8cd98f00b204e9800998ecf8427e"  # md5 of "" — Эг
 HTTP_TIMEOUT = 90.0
 
 PREPARED_SQL = """
-SELECT news_id, retold_title, retold_body_html
+SELECT news_id, retold_title, retold_body_md
 FROM prepared_item
 WHERE status = 'prepared'
 ORDER BY prepared_at ASC, news_id ASC
@@ -89,7 +89,6 @@ class PublishError(RuntimeError):
 @dataclass
 class PublisherConfig:
     own_db: str = "/var/lib/news-evaluator/evaluator.sqlite3"
-    news_db: str = "/var/lib/newscrawler/newscrawler.sqlite3"
     user_agent: str = "PositiveNewsEvaluator/0.1 (+mailto:mail@wildcar.ru)"
     # Telegram
     tg_token: str = ""
@@ -109,7 +108,6 @@ class PublisherConfig:
     def from_env(cls, env: dict[str, str] = os.environ) -> "PublisherConfig":
         cfg = cls()
         cfg.own_db = env.get("EVALUATOR_DB_PATH", cfg.own_db)
-        cfg.news_db = env.get("NEWS_DB_PATH", cfg.news_db)
         cfg.user_agent = env.get("PUBLISHER_USER_AGENT", env.get("PREPARER_USER_AGENT", cfg.user_agent))
         cfg.tg_token = env.get("TELEGRAM_BOT_TOKEN", cfg.tg_token)
         cfg.tg_chat = env.get("TELEGRAM_CHAT_ID", cfg.tg_chat)
@@ -148,18 +146,41 @@ class PreparedNews:
 # ---------------------------------------------------------- content builders
 
 
-def extract_paragraphs(body_html: str) -> list[str]:
-    """Pull the retelling paragraphs back out of the page HTML.
-
-    The preparer wrote each paragraph as one ``<p>escaped-text</p>`` with no
-    nested tags, so a non-greedy match plus unescape is exact."""
-    parts = re.findall(r"<p>(.*?)</p>", body_html or "", re.DOTALL)
-    return [text for text in (html.unescape(p).strip() for p in parts) if text]
-
-
 def source_name_from_url(url: str) -> str:
     host = urllib.parse.urlsplit(url).netloc
     return host[4:] if host.startswith("www.") else host
+
+
+_SOURCE_LINE_RE = re.compile(r"^Источник:\s*\[([^\]]*)\]\(([^)]+)\)\s*$")
+
+
+def parse_markdown(md: str) -> tuple[str, list[str], str, str]:
+    """Parse the stored markdown doc into (title, paragraphs, source_url, source_name).
+
+    The inverse of preparer.build_markdown: the first H1 is the title, the
+    ``Источник: [name](url)`` line is the source, image lines are ignored, and
+    everything else is body split into paragraphs on blank lines."""
+    title = ""
+    source_url = ""
+    source_name = ""
+    body_lines: list[str] = []
+    for line in (md or "").splitlines():
+        stripped = line.strip()
+        if not title and stripped.startswith("# "):
+            title = stripped[2:].strip()
+            continue
+        match = _SOURCE_LINE_RE.match(stripped)
+        if match:
+            source_name, source_url = match.group(1).strip(), match.group(2).strip()
+            continue
+        if stripped.startswith("!["):  # image ref line, if any
+            continue
+        body_lines.append(line)
+    body = "\n".join(body_lines).strip()
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
+    if source_url and not source_name:
+        source_name = source_name_from_url(source_url)
+    return title, paragraphs, source_url, source_name
 
 
 def build_tg_caption(
@@ -553,6 +574,7 @@ def open_own_db(path: str) -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
     con.executescript(preparer.OWN_SCHEMA_SQL)   # prepared_item / illustration
+    preparer.migrate_own_db(con)                 # add retold_body_md to older DBs
     con.executescript(PUBLICATION_SCHEMA_SQL)
     return con
 
@@ -570,17 +592,6 @@ def lead_image_path(con: sqlite3.Connection, news_id: int) -> str | None:
     if row and row["file_path"] and Path(row["file_path"]).exists():
         return row["file_path"]
     return None
-
-
-def source_url_map(news_con: sqlite3.Connection, ids: list[int]) -> dict[int, str]:
-    if not ids:
-        return {}
-    placeholders = ",".join("?" * len(ids))
-    rows = news_con.execute(
-        f"SELECT news_id, primary_url FROM exchange_news_for_selection WHERE news_id IN ({placeholders})",
-        ids,
-    ).fetchall()
-    return {row["news_id"]: row["primary_url"] or "" for row in rows}
 
 
 def record_publication(
@@ -607,14 +618,15 @@ def mark_published(con: sqlite3.Connection, news_id: int) -> None:
         )
 
 
-def build_item(own: sqlite3.Connection, row: sqlite3.Row, source_url: str) -> PreparedNews:
+def build_item(own: sqlite3.Connection, row: sqlite3.Row) -> PreparedNews:
+    title, paragraphs, source_url, source_name = parse_markdown(row["retold_body_md"] or "")
     return PreparedNews(
         news_id=row["news_id"],
-        title=row["retold_title"] or "",
-        paragraphs=extract_paragraphs(row["retold_body_html"] or ""),
+        title=title or (row["retold_title"] or ""),
+        paragraphs=paragraphs,
         lead_image=lead_image_path(own, row["news_id"]),
         source_url=source_url,
-        source_name=source_name_from_url(source_url) if source_url else "",
+        source_name=source_name,
     )
 
 
@@ -631,7 +643,6 @@ def run(cfg: PublisherConfig, limit: int, dry_run: bool, only: int | None) -> in
         return 0
 
     own = open_own_db(cfg.own_db)
-    news_con = evaluator.open_db(cfg.news_db)
     try:
         prepared = own.execute(PREPARED_SQL).fetchall()
         queue: list[tuple[sqlite3.Row, list[str]]] = []
@@ -645,13 +656,12 @@ def run(cfg: PublisherConfig, limit: int, dry_run: bool, only: int | None) -> in
             if only is None and len(queue) >= limit:
                 break
 
-        source_urls = source_url_map(news_con, [row["news_id"] for row, _ in queue])
         log.info("prepared %d, queue %d, platforms [%s]%s",
                  len(prepared), len(queue), ", ".join(platforms), " (dry-run)" if dry_run else "")
 
         published, failed = 0, 0
         for row, pending in queue:
-            item = build_item(own, row, source_urls.get(row["news_id"], ""))
+            item = build_item(own, row)
             had_failure = False
             for platform in pending:
                 try:
@@ -680,7 +690,6 @@ def run(cfg: PublisherConfig, limit: int, dry_run: bool, only: int | None) -> in
         return 0 if failed == 0 else 1
     finally:
         own.close()
-        news_con.close()
 
 
 def main(argv: list[str] | None = None) -> int:

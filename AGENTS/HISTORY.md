@@ -4,6 +4,12 @@ Newest first. Each entry ≤5 lines using the format defined in `AGENTS.md`.
 
 ---
 
+## 2026-07-23 · Store the retelling as markdown, not HTML
+- What: The preparer now stores the retelling as a canonical markdown document (`retold_body_md`: H1 title, paragraphs, `Источник: [имя](url)`) instead of building an HTML page; the publisher parses that markdown instead of regex-ing paragraphs back out of HTML. Dropped the HTML page (`build_page`, `page_path`, `PAGES_DIR`, the pages dir). Older own DBs auto-migrate: `migrate_own_db` adds `retold_body_md` and backfills it from the old HTML on open, no model calls. Publisher no longer opens the crawler DB (source comes from the markdown). 70 tests; round-trip verified.
+- Why: No platform consumes HTML (Эгея wants Neasden, TG its own subset, VK plain text); HTML was a vestigial artifact and the HTML→paragraph round-trip was a smell. Markdown is the model's structure, matches the hermes `.md` convention, and is hand-editable. Owner's call.
+- Files: preparer.py, publisher.py, tests/{test_preparer,test_publisher}.py, deploy/{install.sh,news-evaluator.env.example}, AGENTS/{SPEC,STATE}.md, README.md
+- Next: Owner redeploys (`install.sh`); the own DB migrates itself on first open.
+
 ## 2026-07-23 · Publisher: prepared news to the platforms
 - What: New `publisher.py` (stdlib, ported from the proven hermes flows) posts prepared news to Telegram (@posinus, sendPhoto + HTML caption), wildcar.ru (Эгея: login, upload, note-process, note-publish, verify), and a VK community wall (photo upload + wall.post; needs a user token). Full-auto by timer, small batch; each platform enables only when its secret is set. Idempotent per `(news_id, platform)`; marks «Опубликовано» when all enabled platforms succeed. +19 tests (67 total); Telegram getMe and Эгея login/CSRF verified live without posting.
 - Why: Publication stage of the pipeline. Owner chose full-auto and VK instead of MAX (MAX bot creation blocked — needs a verified org profile).

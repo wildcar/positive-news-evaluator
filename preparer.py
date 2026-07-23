@@ -7,7 +7,8 @@ prepared yet, this:
 1. re-fetches the original article and pulls out illustrations with captions
    (<figure>/<figcaption>, lazy-loaded <img>, og:image), respecting robots;
 2. asks the model for a fresh, lively Russian retelling (not a dry translation);
-3. builds a simple self-contained HTML page with the retelling and the images;
+3. stores the retelling as a markdown document (the canonical text the publisher
+   renders from) plus the downloaded images;
 4. records it in the evaluator's OWN database and marks it «Подготовлено».
 
 Single-file, stdlib-only. Reuses the MCP router client from evaluator.py. The
@@ -25,6 +26,7 @@ import gzip
 import html
 import logging
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -63,8 +65,7 @@ CREATE TABLE IF NOT EXISTS prepared_item (
     news_id INTEGER PRIMARY KEY,
     status TEXT NOT NULL,
     retold_title TEXT,
-    retold_body_html TEXT,
-    page_path TEXT,
+    retold_body_md TEXT,
     model_id TEXT,
     prepared_at TEXT,
     published_at TEXT,
@@ -96,7 +97,6 @@ class PreparerConfig:
     news_db: str = "/var/lib/newscrawler/newscrawler.sqlite3"
     own_db: str = "/var/lib/news-evaluator/evaluator.sqlite3"
     media_dir: str = "/var/lib/news-evaluator/media"
-    pages_dir: str = "/var/lib/news-evaluator/pages"
     user_agent: str = "PositiveNewsEvaluator/0.1 (+mailto:mail@wildcar.ru)"
     fetch_delay: float = 1.0
     max_images: int = MAX_IMAGES
@@ -107,7 +107,6 @@ class PreparerConfig:
         cfg.news_db = env.get("NEWS_DB_PATH", cfg.news_db)
         cfg.own_db = env.get("EVALUATOR_DB_PATH", cfg.own_db)
         cfg.media_dir = env.get("MEDIA_DIR", cfg.media_dir)
-        cfg.pages_dir = env.get("PAGES_DIR", cfg.pages_dir)
         cfg.user_agent = env.get("PREPARER_USER_AGENT", cfg.user_agent)
         return cfg
 
@@ -337,59 +336,63 @@ def retell(router_cfg: "evaluator.Config", news: sqlite3.Row) -> tuple[str, list
     raise evaluator.EvaluationInvalid(last_error)
 
 
-# ------------------------------------------------------------ HTML page
+# ------------------------------------------------------------ markdown
 
 
-PAGE_TEMPLATE = """<!doctype html>
-<html lang="ru">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title}</title>
-<style>
-body{{max-width:720px;margin:0 auto;padding:24px;font:18px/1.6 Georgia,serif;color:#1a1a1a}}
-h1{{font-size:30px;line-height:1.2}}
-figure{{margin:24px 0}}
-img{{max-width:100%;height:auto;border-radius:8px}}
-figcaption{{font-size:14px;color:#666;margin-top:6px}}
-footer{{margin-top:32px;font-size:14px;color:#666;border-top:1px solid #eee;padding-top:12px}}
-</style>
-</head>
-<body>
-<article>
-<h1>{title}</h1>
-{body}
-</article>
-</body>
-</html>
-"""
+def source_name_from_url(url: str) -> str:
+    host = urllib.parse.urlsplit(url).netloc
+    return host[4:] if host.startswith("www.") else host
 
 
-def build_page(title: str, paragraphs: list[str], images: list[dict[str, str]], source_url: str, page_dir: str) -> str:
-    """Render the HTML page body: paragraphs interleaved with figures, then a source footer.
+def build_markdown(title: str, paragraphs: list[str], source_url: str, source_name: str) -> str:
+    """Serialize the retelling as a self-contained markdown document.
 
-    Image src is relative to the page file (pages/<id>.html -> ../media/<id>/<file>)."""
-    blocks: list[str] = []
-    for index, paragraph in enumerate(paragraphs):
-        blocks.append(f"<p>{html.escape(paragraph)}</p>")
-        if index == 0 and images:  # lead image after the first paragraph
-            blocks.append(_figure_html(images[0], page_dir))
-    for image in images[1:]:
-        blocks.append(_figure_html(image, page_dir))
+    H1 title, blank-line-separated paragraphs, a source link. Images are NOT
+    embedded here: they live in the `illustration` table with their files. This
+    markdown is the canonical stored form; every platform renders from it, so
+    there is no HTML round-trip and the text stays hand-editable."""
+    parts = [f"# {title}"]
+    parts.extend(paragraphs)
     if source_url:
-        host = urllib.parse.urlsplit(source_url).netloc
-        blocks.append(f'<footer>Источник: <a href="{html.escape(source_url)}">{html.escape(host)}</a></footer>')
-    return PAGE_TEMPLATE.format(title=html.escape(title), body="\n".join(blocks))
-
-
-def _figure_html(image: dict[str, str], page_dir: str) -> str:
-    rel = os.path.relpath(image["path"], page_dir)
-    caption = html.escape(image["caption"]) if image.get("caption") else ""
-    caption_html = f"<figcaption>{caption}</figcaption>" if caption else ""
-    return f'<figure><img src="{html.escape(rel)}" alt="{caption}">{caption_html}</figure>'
+        parts.append(f"Источник: [{source_name or source_name_from_url(source_url)}]({source_url})")
+    return "\n\n".join(parts) + "\n"
 
 
 # ---------------------------------------------------------------- storage
+
+
+def _html_paragraphs(body: str) -> list[str]:
+    """Paragraphs from a legacy HTML body (each was one <p>escaped-text</p>)."""
+    return [text for text in (html.unescape(p).strip()
+            for p in re.findall(r"<p>(.*?)</p>", body or "", re.DOTALL)) if text]
+
+
+def _html_source_url(body: str) -> str:
+    # build_page stored the href HTML-escaped (& -> &amp;), so unescape it back.
+    match = re.search(r'<footer>Источник:\s*<a href="([^"]+)"', body or "")
+    return html.unescape(match.group(1)) if match else ""
+
+
+def migrate_own_db(con: sqlite3.Connection) -> None:
+    """Bring an older own DB forward: add retold_body_md and backfill it from the
+    HTML that used to be stored (paragraphs + source), so nothing is re-run."""
+    columns = {row["name"] for row in con.execute("PRAGMA table_info(prepared_item)")}
+    if not columns or "retold_body_md" in columns:
+        return
+    con.execute("ALTER TABLE prepared_item ADD COLUMN retold_body_md TEXT")
+    if "retold_body_html" in columns:
+        for row in con.execute(
+            "SELECT news_id, retold_title, retold_body_html FROM prepared_item "
+            "WHERE retold_body_html IS NOT NULL"
+        ).fetchall():
+            source_url = _html_source_url(row["retold_body_html"])
+            markdown = build_markdown(
+                row["retold_title"] or "", _html_paragraphs(row["retold_body_html"]),
+                source_url, source_name_from_url(source_url) if source_url else "",
+            )
+            con.execute("UPDATE prepared_item SET retold_body_md = ? WHERE news_id = ?",
+                        (markdown, row["news_id"]))
+    con.commit()
 
 
 def open_own_db(path: str) -> sqlite3.Connection:
@@ -398,6 +401,7 @@ def open_own_db(path: str) -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
     con.executescript(OWN_SCHEMA_SQL)
+    migrate_own_db(con)
     return con
 
 
@@ -406,19 +410,19 @@ def prepared_ids(con: sqlite3.Connection) -> set[int]:
 
 
 def save_prepared(
-    con: sqlite3.Connection, news_id: int, title: str, body_html: str,
-    page_path: str, model_id: str, images: list[dict[str, str]],
+    con: sqlite3.Connection, news_id: int, title: str, body_md: str,
+    model_id: str, images: list[dict[str, str]],
 ) -> None:
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with con:
         con.execute("DELETE FROM illustration WHERE news_id = ?", (news_id,))
         con.execute(
-            "INSERT INTO prepared_item (news_id, status, retold_title, retold_body_html, page_path, model_id, prepared_at) "
-            "VALUES (?, 'prepared', ?, ?, ?, ?, ?) "
+            "INSERT INTO prepared_item (news_id, status, retold_title, retold_body_md, model_id, prepared_at) "
+            "VALUES (?, 'prepared', ?, ?, ?, ?) "
             "ON CONFLICT(news_id) DO UPDATE SET status='prepared', retold_title=excluded.retold_title, "
-            "retold_body_html=excluded.retold_body_html, page_path=excluded.page_path, "
-            "model_id=excluded.model_id, prepared_at=excluded.prepared_at, error=NULL",
-            (news_id, title, body_html, page_path, model_id, now),
+            "retold_body_md=excluded.retold_body_md, model_id=excluded.model_id, "
+            "prepared_at=excluded.prepared_at, error=NULL",
+            (news_id, title, body_md, model_id, now),
         )
         con.executemany(
             "INSERT INTO illustration (news_id, position, file_path, caption, source_url, downloaded_at) "
@@ -455,8 +459,9 @@ def prepare_one(cfg: PreparerConfig, router_cfg: "evaluator.Config", news: sqlit
                     images = [{"path": f"(dry-run) {c['url']}", "caption": c["caption"], "source_url": c["url"]} for c in candidates]
         except (urllib.error.URLError, OSError, ValueError) as exc:
             log.warning("news %s: article fetch failed: %s", news["news_id"], exc)
-    page_html = build_page(title, paragraphs, images if not dry_run else [], news["primary_url"], cfg.pages_dir)
-    return {"title": title, "paragraphs": paragraphs, "model_id": model_id, "images": images, "page_html": page_html}
+    source_url = news["primary_url"] or ""
+    body_md = build_markdown(title, paragraphs, source_url, source_name_from_url(source_url) if source_url else "")
+    return {"title": title, "paragraphs": paragraphs, "model_id": model_id, "images": images, "body_md": body_md}
 
 
 def run(cfg: PreparerConfig, router_cfg: "evaluator.Config", limit: int, dry_run: bool, only: int | None) -> int:
@@ -484,15 +489,12 @@ def run(cfg: PreparerConfig, router_cfg: "evaluator.Config", limit: int, dry_run
             if dry_run:
                 log.info("news %s [dry-run]: '%s', %d paragraphs, %d images",
                          news["news_id"], result["title"], len(result["paragraphs"]), len(result["images"]))
-                print(result["page_html"])
+                print(result["body_md"])
             else:
-                Path(cfg.pages_dir).mkdir(parents=True, exist_ok=True)
-                page_path = str(Path(cfg.pages_dir) / f"{news['news_id']}.html")
-                Path(page_path).write_text(result["page_html"], encoding="utf-8")
-                save_prepared(own_con, news["news_id"], result["title"], result["page_html"],
-                              page_path, result["model_id"], result["images"])
-                log.info("news %s: prepared '%s' (%d images) -> %s",
-                         news["news_id"], result["title"], len(result["images"]), page_path)
+                save_prepared(own_con, news["news_id"], result["title"], result["body_md"],
+                              result["model_id"], result["images"])
+                log.info("news %s: prepared '%s' (%d images)",
+                         news["news_id"], result["title"], len(result["images"]))
             prepared += 1
         log.info("finished: %d prepared, %d failed", prepared, failed)
         return 0 if failed == 0 else 1
