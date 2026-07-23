@@ -8,6 +8,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -213,7 +214,7 @@ class RunLoopTests(unittest.TestCase):
         publisher.ADAPTERS["telegram"] = ok
         publisher.ADAPTERS["site"] = boom
         rc = publisher.run(self.cfg, limit=10, dry_run=False, only=None)
-        self.assertEqual(rc, 1)  # a failure returns non-zero
+        self.assertEqual(rc, 0)  # recorded platform failures do not fail the run
         con = open_own_db(self.own_path)
         self.assertEqual(con.execute("SELECT status FROM prepared_item WHERE news_id=1").fetchone()["status"], "prepared")
         self.assertEqual(publication_status(con, 1), {"telegram": "ok", "site": "error"})
@@ -238,6 +239,107 @@ class RunLoopTests(unittest.TestCase):
         self.assertEqual(con.execute("SELECT COUNT(*) FROM publication").fetchone()[0], 0)
         self.assertEqual(con.execute("SELECT status FROM prepared_item WHERE news_id=1").fetchone()["status"], "prepared")
         con.close()
+
+
+class ThrottleAndRetryTests(unittest.TestCase):
+    """Rate limit for new items + giving up on a failing platform (no head-of-line)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.own_path = str(Path(self.tmp.name) / "own.sqlite3")
+        self._orig = dict(publisher.ADAPTERS)
+
+    def tearDown(self):
+        publisher.ADAPTERS.clear()
+        publisher.ADAPTERS.update(self._orig)
+        self.tmp.cleanup()
+
+    def _prepare(self, con, news_id):
+        con.execute(
+            "INSERT INTO prepared_item (news_id, status, retold_title, retold_body_md, prepared_at) "
+            "VALUES (?, 'prepared', 'T', ?, ?)",
+            (news_id, f"# T\n\nтекст\n\nИсточник: [s.test](https://s.test/{news_id})",
+             f"2026-07-23T{news_id:02d}:00:00"),
+        )
+
+    @staticmethod
+    def _ago(**kw):
+        return (datetime.now(timezone.utc) - timedelta(**kw)).isoformat(timespec="seconds")
+
+    def _already_published(self, con, news_id, when):
+        """A prior fully-published item plus its successful post at time `when`."""
+        con.execute("INSERT INTO prepared_item (news_id, status, retold_title, retold_body_md) "
+                    "VALUES (?, 'published', 'X', '# X\n\ny')", (news_id,))
+        con.execute("INSERT INTO publication (news_id, platform, status, url, attempts, updated_at) "
+                    "VALUES (?, 'telegram', 'ok', 'u', 1, ?)", (news_id, when))
+
+    def test_new_item_throttled_when_last_post_recent(self):
+        con = open_own_db(self.own_path)
+        self._prepare(con, 1)  # brand-new
+        self._already_published(con, 99, self._ago(minutes=5))
+        con.commit()
+        con.close()
+        calls = []
+        publisher.ADAPTERS["telegram"] = lambda c, i, d: (calls.append(i.news_id), "u")[1]
+        publisher.run(PublisherConfig(own_db=self.own_path, tg_token="t"), limit=1, dry_run=False, only=None)
+        self.assertEqual(calls, [])  # last post 5 min ago (< 120) -> new item held back
+
+    def test_new_item_allowed_when_last_post_old(self):
+        con = open_own_db(self.own_path)
+        self._prepare(con, 1)
+        self._already_published(con, 99, self._ago(hours=3))
+        con.commit()
+        con.close()
+        calls = []
+        publisher.ADAPTERS["telegram"] = lambda c, i, d: (calls.append(i.news_id), "u")[1]
+        publisher.run(PublisherConfig(own_db=self.own_path, tg_token="t"), limit=1, dry_run=False, only=None)
+        self.assertEqual(calls, [1])  # last post 3h ago (> 120) -> allowed
+
+    def test_only_one_new_item_per_run(self):
+        con = open_own_db(self.own_path)
+        self._prepare(con, 1)
+        self._prepare(con, 2)
+        con.commit()
+        con.close()
+        calls = []
+        publisher.ADAPTERS["telegram"] = lambda c, i, d: (calls.append(i.news_id), "u")[1]
+        publisher.run(PublisherConfig(own_db=self.own_path, tg_token="t"), limit=1, dry_run=False, only=None)
+        self.assertEqual(calls, [1])  # only the first (oldest) new item; the second waits
+
+    def test_failing_platform_gives_up_and_does_not_block_others(self):
+        con = open_own_db(self.own_path)
+        # item 1: already public on telegram, site failed and is out of attempts
+        self._prepare(con, 1)
+        con.execute("INSERT INTO publication (news_id, platform, status, url, attempts, updated_at) "
+                    "VALUES (1, 'telegram', 'ok', 'u', 1, ?)", (self._ago(hours=5),))
+        con.execute("INSERT INTO publication (news_id, platform, status, error, attempts, updated_at) "
+                    "VALUES (1, 'site', 'error', 'boom', 8, ?)", (self._ago(hours=5),))
+        self._prepare(con, 2)  # brand-new
+        con.commit()
+        con.close()
+        calls = []
+        publisher.ADAPTERS["telegram"] = lambda c, i, d: (calls.append(("tg", i.news_id)), "u")[1]
+        publisher.ADAPTERS["site"] = lambda c, i, d: (calls.append(("site", i.news_id)), "u")[1]
+        cfg = PublisherConfig(own_db=self.own_path, tg_token="t", site_password="p", max_attempts=8)
+        publisher.run(cfg, limit=1, dry_run=False, only=None)
+        con = open_own_db(self.own_path)
+        # item 1 gave up on the exhausted platform and was finalized, not retried
+        self.assertEqual(con.execute("SELECT status FROM prepared_item WHERE news_id=1").fetchone()["status"], "published")
+        self.assertNotIn(("site", 1), calls)
+        # the new item 2 was not blocked by item 1
+        self.assertEqual(con.execute("SELECT status FROM prepared_item WHERE news_id=2").fetchone()["status"], "published")
+        con.close()
+
+    def test_news_id_override_ignores_throttle(self):
+        con = open_own_db(self.own_path)
+        self._prepare(con, 1)
+        self._already_published(con, 99, self._ago(minutes=1))
+        con.commit()
+        con.close()
+        calls = []
+        publisher.ADAPTERS["telegram"] = lambda c, i, d: (calls.append(i.news_id), "u")[1]
+        publisher.run(PublisherConfig(own_db=self.own_path, tg_token="t"), limit=1, dry_run=False, only=1)
+        self.assertEqual(calls, [1])  # explicit --news-id bypasses the rate limit
 
 
 if __name__ == "__main__":

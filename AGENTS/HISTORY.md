@@ -4,6 +4,12 @@ Newest first. Each entry ≤5 lines using the format defined in `AGENTS.md`.
 
 ---
 
+## 2026-07-23 · Publisher: rate limit + give up on a failing platform
+- What: New items publish at most once per `PUB_MIN_INTERVAL_MINUTES` (default 120), measured from the last successful post; already-public items still finish cross-posting without the limit. A platform that keeps failing is retried up to `PUB_MAX_ATTEMPTS` (8) then given up on, and the item is finalized «Опубликовано» best-effort — fixes head-of-line blocking where one failing platform (a bad VK token, error 27) stalled the whole queue. Publisher now returns 0 on recorded platform failures (no more noisy systemd 'failed'). +5 tests (75 total).
+- Why: Owner asked for ≤1 news per 2h; prod showed 20 prepared but only 1 posted because VK failed and blocked the queue.
+- Files: publisher.py, tests/test_publisher.py, deploy/news-evaluator.env.example, AGENTS/{SPEC,STATE}.md
+- Next: Owner redeploys; VK needs a USER token (group admin), current one is a community token.
+
 ## 2026-07-23 · Store the retelling as markdown, not HTML
 - What: The preparer now stores the retelling as a canonical markdown document (`retold_body_md`: H1 title, paragraphs, `Источник: [имя](url)`) instead of building an HTML page; the publisher parses that markdown instead of regex-ing paragraphs back out of HTML. Dropped the HTML page (`build_page`, `page_path`, `PAGES_DIR`, the pages dir). Older own DBs auto-migrate: `migrate_own_db` adds `retold_body_md` and backfills it from the old HTML on open, no model calls. Publisher no longer opens the crawler DB (source comes from the markdown). 70 tests; round-trip verified.
 - Why: No platform consumes HTML (Эгея wants Neasden, TG its own subset, VK plain text); HTML was a vestigial artifact and the HTML→paragraph round-trip was a smell. Markdown is the model's structure, matches the hermes `.md` convention, and is hand-editable. Owner's call.

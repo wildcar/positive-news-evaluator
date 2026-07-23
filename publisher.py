@@ -3,8 +3,14 @@
 
 For every news item the preparer marked «Подготовлено» (`prepared_item.status =
 'prepared'`), this posts it to each configured platform and, when all of them
-succeed, marks it «Опубликовано». Runs fully automatically in small batches by a
-timer. No model calls: the title, paragraphs and images are already prepared.
+succeed, marks it «Опубликовано». Runs fully automatically by a timer. No model
+calls: the title, paragraphs and images are already prepared.
+
+Pacing: at most one NEW item starts per `min_interval_minutes` (default 120), so
+posts trickle into the public channel/site instead of flooding it. A platform
+that keeps failing is retried up to `max_attempts` times and then given up on;
+the item is finalized «Опубликовано» best-effort with whatever platforms
+succeeded, so a broken platform (e.g. a bad VK token) never blocks the queue.
 
 Platforms (each turns on only when its secrets are present in the config):
 
@@ -42,7 +48,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -103,6 +109,10 @@ class PublisherConfig:
     vk_token: str = ""
     vk_group_id: str = ""
     vk_api_version: str = "5.199"
+    # Pacing: at most one NEW item per interval; give up on a failing platform
+    # after this many attempts so it can't block the queue forever.
+    min_interval_minutes: int = 120
+    max_attempts: int = 8
 
     @classmethod
     def from_env(cls, env: dict[str, str] = os.environ) -> "PublisherConfig":
@@ -119,6 +129,8 @@ class PublisherConfig:
         cfg.vk_token = env.get("VK_ACCESS_TOKEN", cfg.vk_token)
         cfg.vk_group_id = env.get("VK_GROUP_ID", cfg.vk_group_id)
         cfg.vk_api_version = env.get("VK_API_VERSION", cfg.vk_api_version)
+        cfg.min_interval_minutes = int(env.get("PUB_MIN_INTERVAL_MINUTES", cfg.min_interval_minutes))
+        cfg.max_attempts = int(env.get("PUB_MAX_ATTEMPTS", cfg.max_attempts))
         return cfg
 
     def enabled_platforms(self) -> list[str]:
@@ -584,6 +596,19 @@ def publication_status(con: sqlite3.Connection, news_id: int) -> dict[str, str]:
             for row in con.execute("SELECT platform, status FROM publication WHERE news_id = ?", (news_id,))}
 
 
+def publication_state(con: sqlite3.Connection, news_id: int) -> dict[str, tuple[str, int]]:
+    """Per-platform (status, attempts) for one news item."""
+    return {row["platform"]: (row["status"], row["attempts"])
+            for row in con.execute(
+                "SELECT platform, status, attempts FROM publication WHERE news_id = ?", (news_id,))}
+
+
+def last_success_at(con: sqlite3.Connection) -> str | None:
+    """When anything was last posted successfully (drives the new-item throttle)."""
+    row = con.execute("SELECT MAX(updated_at) AS t FROM publication WHERE status = 'ok'").fetchone()
+    return row["t"] if row and row["t"] else None
+
+
 def lead_image_path(con: sqlite3.Connection, news_id: int) -> str | None:
     row = con.execute(
         "SELECT file_path FROM illustration WHERE news_id = ? ORDER BY position ASC LIMIT 1",
@@ -633,6 +658,18 @@ def build_item(own: sqlite3.Connection, row: sqlite3.Row) -> PreparedNews:
 # ---------------------------------------------------------------- pipeline
 
 
+def _pending_platforms(state: dict[str, tuple[str, int]], platforms: list[str], max_attempts: int) -> list[str]:
+    """Platforms still worth trying: not yet ok and not out of attempts."""
+    return [p for p in platforms
+            if state.get(p, ("", 0))[0] != "ok" and state.get(p, ("", 0))[1] < max_attempts]
+
+
+def _settled(state: dict[str, tuple[str, int]], platforms: list[str], max_attempts: int) -> bool:
+    """True when every platform is either ok or has exhausted its attempts."""
+    return all(state.get(p, ("", 0))[0] == "ok" or state.get(p, ("", 0))[1] >= max_attempts
+               for p in platforms)
+
+
 def run(cfg: PublisherConfig, limit: int, dry_run: bool, only: int | None) -> int:
     platforms = cfg.enabled_platforms()
     if not platforms:
@@ -645,57 +682,89 @@ def run(cfg: PublisherConfig, limit: int, dry_run: bool, only: int | None) -> in
     own = open_own_db(cfg.own_db)
     try:
         prepared = own.execute(PREPARED_SQL).fetchall()
-        queue: list[tuple[sqlite3.Row, list[str]]] = []
+        now = datetime.now(timezone.utc)
+        last_ok = last_success_at(own)
+        throttled_new = False
+        if last_ok:
+            try:
+                throttled_new = (now - datetime.fromisoformat(last_ok)) < timedelta(minutes=cfg.min_interval_minutes)
+            except ValueError:
+                throttled_new = False
+        log.info("prepared %d, platforms [%s], last post %s, new items %s%s",
+                 len(prepared), ", ".join(platforms), last_ok or "never",
+                 "throttled" if throttled_new else "allowed", " (dry-run)" if dry_run else "")
+
+        published, incomplete, new_posted = 0, 0, 0
         for row in prepared:
-            if only is not None and row["news_id"] != only:
+            news_id = row["news_id"]
+            if only is not None and news_id != only:
                 continue
-            done = publication_status(own, row["news_id"])
-            pending = [p for p in platforms if done.get(p) != "ok"]
-            if pending:
-                queue.append((row, pending))
-            if only is None and len(queue) >= limit:
-                break
+            state = publication_state(own, news_id)
+            appeared = any(state.get(p, ("", 0))[0] == "ok" for p in platforms)
+            pending = _pending_platforms(state, platforms, cfg.max_attempts)
 
-        log.info("prepared %d, queue %d, platforms [%s]%s",
-                 len(prepared), len(queue), ", ".join(platforms), " (dry-run)" if dry_run else "")
+            if not pending:
+                # Every platform is ok or out of attempts: finalize best-effort so a
+                # persistently failing platform cannot block the rest of the queue.
+                gave_up = [p for p in platforms if state.get(p, ("", 0))[0] != "ok"]
+                if not dry_run:
+                    mark_published(own, news_id)
+                published += 1
+                if gave_up:
+                    log.warning("news %s: «Опубликовано» best-effort, gave up on %s after %d attempts",
+                                news_id, ", ".join(gave_up), cfg.max_attempts)
+                continue
 
-        published, failed = 0, 0
-        for row, pending in queue:
+            # A brand-new item (nothing posted yet) is rate-limited; an item already
+            # public somewhere is finished regardless (it is the same news).
+            if not appeared and only is None and (throttled_new or new_posted >= limit):
+                continue
+
             item = build_item(own, row)
-            had_failure = False
             for platform in pending:
                 try:
                     url = ADAPTERS[platform](cfg, item, dry_run)
                 except Exception as exc:  # one bad platform must not sink the batch
-                    had_failure = True
-                    log.error("news %s -> %s failed: %s", item.news_id, platform, exc)
+                    log.error("news %s -> %s failed: %s", news_id, platform, exc)
                     if not dry_run:
-                        record_publication(own, item.news_id, platform, "error", None, str(exc))
+                        record_publication(own, news_id, platform, "error", None, str(exc))
                     continue
-                log.info("news %s -> %s ok: %s", item.news_id, platform, url)
+                log.info("news %s -> %s ok: %s", news_id, platform, url)
                 if not dry_run:
-                    record_publication(own, item.news_id, platform, "ok", url, None)
+                    record_publication(own, news_id, platform, "ok", url, None)
+
+            if not appeared:
+                new_posted += 1
+                throttled_new = True  # at most one fresh appearance per run and window
 
             if dry_run:
                 continue
-            status_now = publication_status(own, item.news_id)
-            if all(status_now.get(p) == "ok" for p in platforms):
-                mark_published(own, item.news_id)
+            state_now = publication_state(own, news_id)
+            if _settled(state_now, platforms, cfg.max_attempts):
+                mark_published(own, news_id)
                 published += 1
-                log.info("news %s: all platforms ok -> «Опубликовано»", item.news_id)
-            elif had_failure:
-                failed += 1
-        log.info("finished: %d published, %d with failures%s",
-                 published, failed, " (dry-run, nothing sent)" if dry_run else "")
-        return 0 if failed == 0 else 1
+                gave_up = [p for p in platforms if state_now.get(p, ("", 0))[0] != "ok"]
+                if gave_up:
+                    log.warning("news %s: «Опубликовано» best-effort, gave up on %s after %d attempts",
+                                news_id, ", ".join(gave_up), cfg.max_attempts)
+                else:
+                    log.info("news %s: all platforms ok -> «Опубликовано»", news_id)
+            else:
+                incomplete += 1
+
+        log.info("finished: %d published, %d incomplete (will retry)%s",
+                 published, incomplete, " (dry-run, nothing sent)" if dry_run else "")
+        return 0
     finally:
         own.close()
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Publish prepared news to the platforms.")
-    parser.add_argument("--limit", type=int, default=3, help="batch size (default 3)")
-    parser.add_argument("--news-id", type=int, default=None, help="publish only this news id")
+    parser.add_argument("--limit", type=int, default=1,
+                        help="max NEW items to start per run (default 1); retries of already-public items are not limited")
+    parser.add_argument("--news-id", type=int, default=None,
+                        help="publish only this news id (ignores the rate limit)")
     parser.add_argument("--dry-run", action="store_true", help="build content and log, send nothing")
     parser.add_argument("--verbose", action="store_true", help="debug logging")
     args = parser.parse_args(argv)
