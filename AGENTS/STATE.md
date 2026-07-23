@@ -12,43 +12,30 @@ decide which items pass on.
 
 ## Now
 
-- Service v0 works: `evaluator.py` (Python 3.12, stdlib only) reads the queue, asks a
-  model through model-router-mcp (`chat` tool, deepseek/deepseek-chat for tests) and
-  writes a `skipped` event plus 20 scores per news in one transaction.
-- Live runs: 103 news scored into the prod crawler DB as of 2026-07-15 (selector
-  `news-evaluator`, version `0.1.0+deepseek-chat`); the 100-item batch took ~4 min,
-  cost $0.07, 0 failures, 0 validation retries. Naive cut positivity>=6 &
-  negativity<=3 passes 23 of 103 — feed averages: positivity 2.9, negativity 5.5.
-- Reply validation per SPEC («Проверка ответа модели»): fence/prose-tolerant JSON
-  extraction, key/type/range checks, up to 3 attempts with error feedback to the model.
-  27 unit tests green (`python3 -m unittest discover -s tests`).
-- Selection profile `default` is implemented in `evaluator.py` (SPEC «Пороговая
-  модель»): scoring now writes `positive`/`not_positive`, and `--backfill`
-  re-verdicts already-scored news from stored scores with no model calls. 36 unit
-  tests green. Backfill dry-run on prod: 6228 processed, 120 selected (~1.9%), 0
-  incomplete. Backfill has since run for real on prod (events tagged
-  `0.2.0+backfill:default`): latest reviews now hold 120 positive and 6108
-  not_positive by `news-evaluator`.
-- v0.2.0: the model is not hard-coded — `EVALUATOR_MODEL`/`EVALUATOR_PROVIDER`/
-  `EVALUATOR_TIER` come from `/etc/news-evaluator/news-evaluator.env`; empty model
-  delegates the choice to the router; each event's `selector_version` records the
-  model that actually answered. Verified live (dry run, news 113).
-- Permanent mode is LIVE since 2026-07-15: the owner ran `deploy/install.sh`,
-  `news-evaluator.timer` fires every 10 min under the dedicated `newsevaluator` user
-  (25 news per batch, ~3600/day capacity vs ~500/day inflow). First timer batch:
-  25/25, 0 failures, sidecar group perms intact. DB now holds 103 events under
-  `0.1.0+deepseek-chat` and the permanent stream under `0.2.0+deepseek-chat`.
+- `evaluator.py` (Python 3.12, stdlib only) scores news on the 20 axes via
+  model-router-mcp and, with the `default` selection profile, writes
+  `positive`/`not_positive` plus 20 scores per news in one transaction. Model is
+  config-driven (`/etc/news-evaluator/news-evaluator.env`); each event records the
+  model that answered in `selector_version`. Runs every 10 min under `newsevaluator`.
+- LIVE on prod: backfill ran (events `0.2.0+backfill:default`); latest reviews hold
+  120 positive and 6108 not_positive by `news-evaluator`. Feed positivity averages ~3,
+  so the strict rule passes ~2%. Crawler-side retention of rejected news (>3 days) is
+  deployed by the owner.
+- NEW `preparer.py` (stdlib, reuses evaluator's MCP client): takes selected, not-yet-
+  prepared news; re-fetches the article for illustrations+captions (og:image, figure/
+  figcaption, lazy img) respecting robots; asks the model for a fresh lively Russian
+  retelling (JSON {title, body[]}, humanizer-ru rules + deterministic long-dash→hyphen);
+  builds a self-contained HTML page; stores everything in an evaluator-owned SQLite
+  (`/var/lib/news-evaluator/evaluator.sqlite3`) + media/pages dirs; marks «Подготовлено».
+  48 unit tests green. Verified by dry-run on prod news 580 (EN→RU) and 469 (RU): good
+  retelling, 4 images, no long dashes. NOT yet deployed (needs `install.sh`).
 
 ## Next
 
-1. ✅ Deployed and backfilled on prod (120 positive / 6108 not_positive).
-2. ✅ Crawler-side retention for rejected news committed (`positive-news-crawler`,
-   `purge_rejected_content`, 3 days); awaits crawler deploy.
-3. Preparation stage (label «Подготовлено»): download illustrations with captions,
-   Russian retelling (generate fresh), HTML page, in a new evaluator-owned SQLite +
-   media dir.
-4. Publication stage (label «Опубликовано») — next project step, platforms TBD.
-5. Prompt calibration and soft profiles («Россия» / «Международное»).
+1. Owner: deploy the preparer (`sudo bash deploy/install.sh`) — copies `preparer.py`,
+   creates `/var/lib/news-evaluator`, enables `news-preparer.timer` (every 15 min).
+2. Publication stage (label «Опубликовано») — next project step, platforms TBD.
+3. Prompt calibration and soft profiles («Россия» / «Международное»).
 
 ## Open questions
 

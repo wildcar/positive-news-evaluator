@@ -15,6 +15,13 @@ fi
 
 install -d -m 0755 /opt/news-evaluator
 install -m 0644 "$REPO_DIR/evaluator.py" /opt/news-evaluator/evaluator.py
+install -m 0644 "$REPO_DIR/preparer.py" /opt/news-evaluator/preparer.py
+
+# Evaluator-owned state: own DB, downloaded images, generated HTML pages.
+# Kept separate from the crawler DB by contract; owned by the service user.
+install -d -o newsevaluator -g newsevaluator -m 0750 /var/lib/news-evaluator
+install -d -o newsevaluator -g newsevaluator -m 0750 /var/lib/news-evaluator/media
+install -d -o newsevaluator -g newsevaluator -m 0750 /var/lib/news-evaluator/pages
 
 install -d -m 0755 /etc/news-evaluator
 ENV_FILE=/etc/news-evaluator/news-evaluator.env
@@ -43,15 +50,20 @@ fi
 
 install -m 0644 "$REPO_DIR/deploy/news-evaluator.service" /etc/systemd/system/news-evaluator.service
 install -m 0644 "$REPO_DIR/deploy/news-evaluator.timer" /etc/systemd/system/news-evaluator.timer
+install -m 0644 "$REPO_DIR/deploy/news-preparer.service" /etc/systemd/system/news-preparer.service
+install -m 0644 "$REPO_DIR/deploy/news-preparer.timer" /etc/systemd/system/news-preparer.timer
 systemctl daemon-reload
 systemctl enable --now news-evaluator.timer
+systemctl enable --now news-preparer.timer
 
 # The crawler's update script stops every service listed here before touching
-# the DB schema.
+# the DB schema (both open the crawler DB).
 touch /etc/newscrawler/update-services
-if ! grep -qx 'news-evaluator.service' /etc/newscrawler/update-services; then
-    echo 'news-evaluator.service' >> /etc/newscrawler/update-services
-    echo "registered news-evaluator.service in /etc/newscrawler/update-services"
-fi
+for unit in news-evaluator.service news-preparer.service; do
+    if ! grep -qx "$unit" /etc/newscrawler/update-services; then
+        echo "$unit" >> /etc/newscrawler/update-services
+        echo "registered $unit in /etc/newscrawler/update-services"
+    fi
+done
 
-echo "done; check: systemctl list-timers news-evaluator.timer"
+echo "done; check: systemctl list-timers 'news-*.timer'"
