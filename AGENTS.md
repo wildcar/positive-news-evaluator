@@ -110,8 +110,9 @@ Python 3.12, standard library only (sqlite3 + urllib): no dependencies to instal
 # test         — python3 -m unittest discover -s tests
 # dry run      — ROUTER_AUTH_TOKEN=... python3 evaluator.py --dry-run --limit 1
 # prepare 1    — ROUTER_AUTH_TOKEN=... python3 preparer.py --dry-run --news-id N
+# publish 1    — python3 publisher.py --dry-run --news-id N (no model, no router)
 # host deploy  — sudo bash deploy/install.sh (user, config, systemd timers)
-# host status  — systemctl list-timers 'news-*.timer'; journalctl -u news-preparer.service
+# host status  — systemctl list-timers 'news-*.timer'; journalctl -u news-publisher.service
 # lint         — none yet
 ```
 
@@ -122,7 +123,9 @@ evaluator.py   scoring + selection: MCP HTTP client, prompt builder (axes from t
                DB reference), reply validation, selection profile, DB writer, backfill
 preparer.py    prepares selected news: article re-fetch, illustration+caption
                extraction, Russian retelling, HTML page, evaluator-owned SQLite
-tests/         unittest suite for both scripts (no network, no crawler DB)
+publisher.py   posts prepared news to Telegram / wildcar.ru (Эгея) / VK; stdlib
+               HTTP + cookie session, idempotent per (news_id, platform)
+tests/         unittest suite for all three scripts (no network, no crawler DB)
 deploy/        host install: systemd services + timers, env template, install.sh
 AGENTS/        agent docs: SPEC (contract), STATE, HISTORY, MEMORY, ENV
 docs/adr/      architecture decision records

@@ -30,3 +30,15 @@ MEMORY.md = durable facts/agreements; current state -> STATE.md; iteration log -
   the exchange contract forbids clients from writing any table but the two exchange ones.
 - Deleting rejected news is the crawler's job (its maintenance), not the evaluator's —
   same contract limit. The evaluator only supplies the `not_positive` verdict.
+- Publication targets (owner, 2026-07-23): Telegram channel @posinus (numeric chat id
+  `-1003795927410`, bot `buyvbot`); site wildcar.ru — an Эгея («Позитивные новости») blog
+  on a SEPARATE host `95.165.109.250`, login `wildcar`; VK community wall. MAX was dropped —
+  owner cannot create a MAX bot (needs a verified org/self-employed profile), chose VK.
+- The publisher's publish mechanisms were ported from `~/repo/hermes` (`send_tg.py`,
+  `wildcar_publish_*.py`), which have posted to these platforms manually for months. Those
+  secrets live in `~/.hermes/.env` (Telegram) and `hermes/egeya.txt` (Эгея password, login
+  in line 1 only if the file has ≥2 lines else default `wildcar`) — but `newsevaluator`
+  can't read keeper's home, so the owner must copy them into the evaluator env file.
+- VK: posting a photo to a community wall needs a USER access token of a group admin
+  (scope photos,wall,groups); a community token fails `photos.getWallUploadServer` with
+  error 27. `VK_GROUP_ID` is the positive numeric id; post with `owner_id=-<id>` + `from_group=1`.

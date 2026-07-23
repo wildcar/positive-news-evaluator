@@ -4,6 +4,12 @@ Newest first. Each entry ≤5 lines using the format defined in `AGENTS.md`.
 
 ---
 
+## 2026-07-23 · Publisher: prepared news to the platforms
+- What: New `publisher.py` (stdlib, ported from the proven hermes flows) posts prepared news to Telegram (@posinus, sendPhoto + HTML caption), wildcar.ru (Эгея: login, upload, note-process, note-publish, verify), and a VK community wall (photo upload + wall.post; needs a user token). Full-auto by timer, small batch; each platform enables only when its secret is set. Idempotent per `(news_id, platform)`; marks «Опубликовано» when all enabled platforms succeed. +19 tests (67 total); Telegram getMe and Эгея login/CSRF verified live without posting.
+- Why: Publication stage of the pipeline. Owner chose full-auto and VK instead of MAX (MAX bot creation blocked — needs a verified org profile).
+- Files: publisher.py, tests/test_publisher.py, deploy/{install.sh,news-publisher.service,news-publisher.timer,news-evaluator.env.example}, AGENTS/{SPEC,STATE,MEMORY}.md, README.md
+- Next: Owner deploys (`install.sh`) and fills platform secrets in the env file; get a VK user token + group id for the community.
+
 ## 2026-07-23 · Preparer: selected news to HTML pages
 - What: New `preparer.py` (stdlib, reuses evaluator's MCP client) prepares selected news: article re-fetch + illustration/caption extraction (og:image, figure/figcaption, lazy img, robots-aware), fresh Russian retelling (JSON title/body, humanizer-ru + deterministic long-dash→hyphen), self-contained HTML page, evaluator-owned SQLite + media/pages dirs, «Подготовлено» label. Deploy: install.sh + news-preparer.timer (15 min). +12 tests (48 total).
 - Why: Step 4 of the pipeline — turn «Отобрано» news into publish-ready pages.
