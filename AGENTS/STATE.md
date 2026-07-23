@@ -26,7 +26,9 @@ decide which items pass on.
   модель»): scoring now writes `positive`/`not_positive`, and `--backfill`
   re-verdicts already-scored news from stored scores with no model calls. 36 unit
   tests green. Backfill dry-run on prod: 6228 processed, 120 selected (~1.9%), 0
-  incomplete. NOT yet deployed and NOT yet run for real (owner steps).
+  incomplete. Backfill has since run for real on prod (events tagged
+  `0.2.0+backfill:default`): latest reviews now hold 120 positive and 6108
+  not_positive by `news-evaluator`.
 - v0.2.0: the model is not hard-coded — `EVALUATOR_MODEL`/`EVALUATOR_PROVIDER`/
   `EVALUATOR_TIER` come from `/etc/news-evaluator/news-evaluator.env`; empty model
   delegates the choice to the router; each event's `selector_version` records the
@@ -39,9 +41,9 @@ decide which items pass on.
 
 ## Next
 
-1. Owner: deploy the new `evaluator.py` (`sudo bash deploy/install.sh`) and run the
-   one-time backfill once: `sudo -u newsevaluator ... evaluator.py --backfill`.
-2. Crawler-side change (separate repo): delete rejected news older than 3 days.
+1. ✅ Deployed and backfilled on prod (120 positive / 6108 not_positive).
+2. ✅ Crawler-side retention for rejected news committed (`positive-news-crawler`,
+   `purge_rejected_content`, 3 days); awaits crawler deploy.
 3. Preparation stage (label «Подготовлено»): download illustrations with captions,
    Russian retelling (generate fresh), HTML page, in a new evaluator-owned SQLite +
    media dir.
