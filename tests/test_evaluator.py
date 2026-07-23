@@ -12,7 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import evaluator
 from evaluator import (
     Config,
+    DEFAULT_PROFILE,
     EvaluationInvalid,
+    SelectionProfile,
     _coerce_score,
     build_chat_arguments,
     extract_json_object,
@@ -204,12 +206,12 @@ class WriteReviewTests(unittest.TestCase):
 
     def test_event_and_scores_written(self):
         event_id = write_review(
-            self.con, self.cfg, 5, full_scores(), "комментарий", "actual-model"
+            self.con, self.cfg, 5, full_scores(), "комментарий", "actual-model", "positive"
         )
         event = self.con.execute(
             "SELECT * FROM exchange_review_events WHERE id = ?", (event_id,)
         ).fetchone()
-        self.assertEqual(event["decision"], "skipped")
+        self.assertEqual(event["decision"], "positive")
         self.assertIsNone(event["score"])
         self.assertEqual(event["reason"], "комментарий")
         # the model that answered is recorded, not the configured one
@@ -223,22 +225,76 @@ class WriteReviewTests(unittest.TestCase):
         self.assertEqual(rows, 20)
 
     def test_unknown_model_still_recorded(self):
-        event_id = write_review(self.con, self.cfg, 5, full_scores(), "", "")
+        event_id = write_review(self.con, self.cfg, 5, full_scores(), "", "", "not_positive")
         event = self.con.execute(
-            "SELECT selector_version FROM exchange_review_events WHERE id = ?", (event_id,)
+            "SELECT selector_version, decision FROM exchange_review_events WHERE id = ?",
+            (event_id,),
         ).fetchone()
         self.assertEqual(
             event["selector_version"], f"{evaluator.EVALUATOR_VERSION}+router-choice"
         )
+        self.assertEqual(event["decision"], "not_positive")
 
     def test_foreign_key_enforced(self):
         scores = full_scores()
         scores["unknown_axis"] = 5
         del scores["promo"]
         with self.assertRaises(sqlite3.IntegrityError):
-            write_review(self.con, self.cfg, 5, scores, "", "actual-model")
+            write_review(self.con, self.cfg, 5, scores, "", "actual-model", "positive")
         events = self.con.execute("SELECT COUNT(*) FROM exchange_review_events").fetchone()[0]
         self.assertEqual(events, 0)  # transaction rolled back entirely
+
+
+class SelectionProfileTests(unittest.TestCase):
+    """The owner's default rule: positivity>=8, heroism/clickbait/promo<=4,
+    and at least one bright axis >=9."""
+
+    def _base(self) -> dict[str, int]:
+        # passes every hard gate; no bright axis yet -> not selected on its own
+        scores = full_scores(0)
+        scores["positivity"] = 8
+        return scores
+
+    def test_bright_axis_selects(self):
+        for axis in ("pride_humanity", "pride_russia", "inspiration", "beauty",
+                     "interestingness", "surprise", "uniqueness"):
+            scores = self._base()
+            scores[axis] = 9
+            self.assertTrue(DEFAULT_PROFILE.selects(scores), axis)
+            self.assertEqual(DEFAULT_PROFILE.decide(scores), "positive", axis)
+
+    def test_no_bright_axis_rejected(self):
+        scores = self._base()  # gates fine, but nothing reaches 9
+        self.assertFalse(DEFAULT_PROFILE.selects(scores))
+        self.assertEqual(DEFAULT_PROFILE.decide(scores), "not_positive")
+
+    def test_low_positivity_rejected(self):
+        scores = self._base()
+        scores["positivity"] = 7  # below the >7 gate
+        scores["beauty"] = 10
+        self.assertFalse(DEFAULT_PROFILE.selects(scores))
+
+    def test_upper_gates_block_selection(self):
+        for axis in ("heroism", "clickbait", "promo"):
+            scores = self._base()
+            scores["beauty"] = 10
+            scores[axis] = 5  # one over the <=4 bound
+            self.assertFalse(DEFAULT_PROFILE.selects(scores), axis)
+
+    def test_boundary_values(self):
+        scores = self._base()
+        scores["beauty"] = 9
+        scores["heroism"] = 4
+        scores["clickbait"] = 4
+        scores["promo"] = 4
+        self.assertTrue(DEFAULT_PROFILE.selects(scores))  # all bounds inclusive
+
+    def test_missing_axis_reads_as_zero(self):
+        profile = SelectionProfile(
+            name="t", gates_min={"positivity": 8}, gates_max={}, highlight_min={}
+        )
+        self.assertFalse(profile.selects({}))
+        self.assertTrue(profile.selects({"positivity": 8}))
 
 
 class ChatArgumentsTests(unittest.TestCase):

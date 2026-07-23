@@ -4,6 +4,12 @@ Newest first. Each entry ≤5 lines using the format defined in `AGENTS.md`.
 
 ---
 
+## 2026-07-23 · Default selection profile implemented
+- What: `SelectionProfile` + `DEFAULT_PROFILE` in `evaluator.py`; scoring now writes positive/not_positive; new `--backfill` re-verdicts old `skipped` news from stored scores (no model calls). `write_review` takes a `decision`. +9 unit tests (36 total).
+- Why: Owner confirmed the strict rule and said proceed; turns the always-`skipped` v0 into real selection.
+- Files: evaluator.py, tests/test_evaluator.py, AGENTS/SPEC.md, AGENTS/STATE.md
+- Next: Owner deploys and runs `--backfill` once (dry-run on prod: 6228 processed, 120 selected).
+
 ## 2026-07-23 · Selection rule and post-selection pipeline specced
 - What: Fixed the `default` selection profile (positivity≥8, heroism/clickbait/promo≤4, one bright axis ≥9 → «Отобрано»), the label lifecycle, the «Подготовлено» preparation stage (illustrations+captions, RU retelling, HTML) in an evaluator-owned DB, and the publication placeholder.
 - Why: User request to define selection thresholds and the downstream prepare/publish flow.

@@ -3,11 +3,15 @@
 
 Single-file, stdlib-only. Reads unevaluated news from the crawler's SQLite
 exchange contract, asks a chat model through model-router-mcp (Streamable HTTP
-MCP), validates the reply, and appends a review event plus per-axis scores in
-one transaction.
+MCP), validates the reply, applies the selection profile, and appends a review
+event (positive/not_positive) plus per-axis scores in one transaction.
+
+--backfill re-verdicts news that were scored before the profile existed (their
+latest event is 'skipped'): it recomputes the verdict from the stored scores and
+writes a correcting event, without calling the model.
 
 Contract: ~/repo/positive-news-crawler/docs/database-contract.md
-Behavior: AGENTS/SPEC.md, section "Сервис v0".
+Behavior: AGENTS/SPEC.md, sections "Сервис v0" and "Пороговая модель".
 """
 
 from __future__ import annotations
@@ -62,13 +66,25 @@ INSERT INTO exchange_review_events (
     news_id, decision, score, reason,
     selector_name, selector_version,
     idempotency_key, created_at
-) VALUES (?, 'skipped', NULL, ?, ?, ?, ?, ?)
+) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)
 RETURNING id
 """
 
 INSERT_SCORE_SQL = """
 INSERT INTO exchange_evaluation_scores (review_event_id, characteristic_key, value)
 VALUES (?, ?, ?)
+"""
+
+# News whose latest event by this selector is still 'skipped' (no verdict yet),
+# together with the scores attached to that event. Feeds the backfill pass.
+BACKFILL_SQL = """
+SELECT s.news_id, s.characteristic_key, s.value
+FROM exchange_latest_evaluation_scores AS s
+JOIN exchange_latest_reviews AS r
+  ON r.news_id = s.news_id AND r.selector_name = s.selector_name
+WHERE s.selector_name = :selector_name
+  AND r.decision = 'skipped'
+ORDER BY s.news_id
 """
 
 
@@ -349,6 +365,56 @@ def validate_evaluation(
     return scores, comment, warnings
 
 
+# -------------------------------------------------------- selection profile
+
+
+@dataclass(frozen=True)
+class SelectionProfile:
+    """Per-axis thresholds that turn scores into a verdict.
+
+    A news item is selected when every ``gates_min``/``gates_max`` bound holds
+    and, if ``highlight_min`` is non-empty, at least one of its axes reaches its
+    bound. A missing axis reads as 0. Bounds are inclusive.
+    """
+
+    name: str
+    gates_min: dict[str, int]
+    gates_max: dict[str, int]
+    highlight_min: dict[str, int]
+
+    def selects(self, scores: dict[str, int]) -> bool:
+        if any(scores.get(axis, 0) < low for axis, low in self.gates_min.items()):
+            return False
+        if any(scores.get(axis, 0) > high for axis, high in self.gates_max.items()):
+            return False
+        if self.highlight_min:
+            return any(scores.get(axis, 0) >= low for axis, low in self.highlight_min.items())
+        return True
+
+    def decide(self, scores: dict[str, int]) -> str:
+        return "positive" if self.selects(scores) else "not_positive"
+
+
+# Owner's rule (SPEC «Пороговая модель и метка "Отобрано"»): strict on purpose,
+# few items pass. heroism is an upper gate here despite its lower_bound default.
+DEFAULT_PROFILE = SelectionProfile(
+    name="default",
+    gates_min={"positivity": 8},
+    gates_max={"heroism": 4, "clickbait": 4, "promo": 4},
+    highlight_min={
+        "pride_humanity": 9,
+        "pride_russia": 9,
+        "inspiration": 9,
+        "beauty": 9,
+        "interestingness": 9,
+        "surprise": 9,
+        "uniqueness": 9,
+    },
+)
+
+PROFILES = {DEFAULT_PROFILE.name: DEFAULT_PROFILE}
+
+
 # ------------------------------------------------------------------ prompt
 
 
@@ -461,11 +527,14 @@ def write_review(
     scores: dict[str, int],
     comment: str,
     model_id: str,
+    decision: str,
 ) -> int:
     """Insert the review event and all axis scores in one transaction.
 
     model_id is the model that actually produced the scores (from the router
     reply), so selector_version stays truthful when the configured model changes.
+    decision is the verdict from the selection profile (positive/not_positive)
+    or 'skipped' when no verdict is reached.
     """
     selector_version = f"{EVALUATOR_VERSION}+{model_id or 'router-choice'}"
     idempotency_key = f"{news_id}:{selector_version}:{uuid.uuid4().hex[:12]}"
@@ -475,7 +544,7 @@ def write_review(
             with con:
                 cur = con.execute(
                     INSERT_EVENT_SQL,
-                    (news_id, comment, cfg.selector_name, selector_version,
+                    (news_id, decision, comment, cfg.selector_name, selector_version,
                      idempotency_key, created_at),
                 )
                 event_id = cur.fetchone()[0]
@@ -493,7 +562,7 @@ def write_review(
     raise AssertionError("unreachable")
 
 
-def run(cfg: Config, limit: int, dry_run: bool) -> int:
+def run(cfg: Config, profile: SelectionProfile, limit: int, dry_run: bool) -> int:
     con = open_db(cfg.db_path)
     try:
         axes = fetch_axes(con)
@@ -502,9 +571,9 @@ def run(cfg: Config, limit: int, dry_run: bool) -> int:
         queue = con.execute(
             QUEUE_SQL, {"selector_name": cfg.selector_name, "batch_size": limit}
         ).fetchall()
-        log.info("queue: %d news to evaluate (limit %d)", len(queue), limit)
+        log.info("queue: %d news to evaluate (limit %d, profile %s)", len(queue), limit, profile.name)
 
-        done, failed, total_cost = 0, 0, 0.0
+        done, failed, selected, total_cost = 0, 0, 0, 0.0
         for news in queue:
             title = (news["title"] or "")[:60]
             try:
@@ -517,25 +586,69 @@ def run(cfg: Config, limit: int, dry_run: bool) -> int:
                 failed += 1
                 log.error("news %s: router/model error: %s", news["news_id"], exc)
                 continue
+            decision = profile.decide(scores)
+            selected += decision == "positive"
             total_cost += reply.get("cost_usd") or 0.0
             if dry_run:
-                log.info("news %s [dry-run] %s", news["news_id"], title)
+                log.info("news %s [dry-run] %s -> %s", news["news_id"], title, decision)
                 print(json.dumps(
-                    {"news_id": news["news_id"], "scores": scores, "comment": comment},
+                    {"news_id": news["news_id"], "decision": decision,
+                     "scores": scores, "comment": comment},
                     ensure_ascii=False,
                 ))
             else:
                 model_used = reply.get("model_id") or cfg.model_id
                 event_id = write_review(
-                    con, cfg, news["news_id"], scores, comment, model_used
+                    con, cfg, news["news_id"], scores, comment, model_used, decision
                 )
-                log.info("news %s: event %d written: %s", news["news_id"], event_id, title)
+                log.info("news %s: event %d %s: %s", news["news_id"], event_id, decision, title)
             done += 1
         log.info(
-            "finished: %d evaluated, %d failed, model cost $%.4f (%s/%s)",
-            done, failed, total_cost, cfg.provider, cfg.model_id,
+            "finished: %d evaluated (%d selected), %d failed, model cost $%.4f (%s/%s)",
+            done, selected, failed, total_cost, cfg.provider, cfg.model_id,
         )
         return 0 if failed == 0 else 1
+    finally:
+        con.close()
+
+
+def run_backfill(cfg: Config, profile: SelectionProfile, dry_run: bool) -> int:
+    """Turn earlier 'skipped' verdicts into positive/not_positive from stored scores.
+
+    Applies the profile to the scores already attached to each news item's latest
+    'skipped' event by this selector, then writes a correcting event with the full
+    score set and a new idempotency key, as the exchange contract requires. No
+    model calls: the verdict is a deterministic function of the stored scores.
+    """
+    con = open_db(cfg.db_path)
+    try:
+        by_news: dict[int, dict[str, int]] = {}
+        for row in con.execute(BACKFILL_SQL, {"selector_name": cfg.selector_name}):
+            by_news.setdefault(row["news_id"], {})[row["characteristic_key"]] = row["value"]
+        log.info("backfill: %d news with a 'skipped' verdict (profile %s)", len(by_news), profile.name)
+
+        processed, selected, incomplete = 0, 0, 0
+        for news_id, scores in by_news.items():
+            if len(scores) != AXIS_COUNT:
+                incomplete += 1
+                log.warning("news %s: %d/%d scores, skipping backfill", news_id, len(scores), AXIS_COUNT)
+                continue
+            decision = profile.decide(scores)
+            selected += decision == "positive"
+            if dry_run:
+                log.info("news %s [dry-run] -> %s", news_id, decision)
+            else:
+                event_id = write_review(
+                    con, cfg, news_id, scores, "", f"backfill:{profile.name}", decision
+                )
+                log.debug("news %s: event %d %s", news_id, event_id, decision)
+            processed += 1
+        log.info(
+            "backfill finished: %d processed, %d selected, %d incomplete%s",
+            processed, selected, incomplete,
+            " (dry-run, nothing written)" if dry_run else "",
+        )
+        return 0
     finally:
         con.close()
 
@@ -544,6 +657,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Score crawler news on the 20-axis set.")
     parser.add_argument("--limit", type=int, default=3, help="batch size (default 3)")
     parser.add_argument("--dry-run", action="store_true", help="evaluate and print, do not write")
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="re-verdict already-scored 'skipped' news from stored scores; no model calls",
+    )
+    parser.add_argument("--profile", default=DEFAULT_PROFILE.name, help="selection profile name")
     parser.add_argument("--verbose", action="store_true", help="debug logging")
     args = parser.parse_args(argv)
 
@@ -552,11 +671,17 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(message)s",
         stream=sys.stderr,
     )
+    profile = PROFILES.get(args.profile)
+    if profile is None:
+        log.error("unknown profile %r; known: %s", args.profile, ", ".join(PROFILES))
+        return 2
     cfg = Config.from_env()
+    if args.backfill:
+        return run_backfill(cfg, profile, dry_run=args.dry_run)
     if not cfg.router_token:
         log.error("ROUTER_AUTH_TOKEN is not set")
         return 2
-    return run(cfg, limit=args.limit, dry_run=args.dry_run)
+    return run(cfg, profile, limit=args.limit, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

@@ -22,7 +22,11 @@ decide which items pass on.
 - Reply validation per SPEC («Проверка ответа модели»): fence/prose-tolerant JSON
   extraction, key/type/range checks, up to 3 attempts with error feedback to the model.
   27 unit tests green (`python3 -m unittest discover -s tests`).
-- `decision` is always `skipped` until the threshold model exists.
+- Selection profile `default` is implemented in `evaluator.py` (SPEC «Пороговая
+  модель»): scoring now writes `positive`/`not_positive`, and `--backfill`
+  re-verdicts already-scored news from stored scores with no model calls. 36 unit
+  tests green. Backfill dry-run on prod: 6228 processed, 120 selected (~1.9%), 0
+  incomplete. NOT yet deployed and NOT yet run for real (owner steps).
 - v0.2.0: the model is not hard-coded — `EVALUATOR_MODEL`/`EVALUATOR_PROVIDER`/
   `EVALUATOR_TIER` come from `/etc/news-evaluator/news-evaluator.env`; empty model
   delegates the choice to the router; each event's `selector_version` records the
@@ -35,24 +39,24 @@ decide which items pass on.
 
 ## Next
 
-1. Implement the `default` selection profile (SPEC «Пороговая модель»): apply it at
-   scoring time and add a backfill pass over already-`skipped` news that writes a
-   correcting `positive`/`not_positive` event. Rule: positivity≥8, heroism≤4,
-   clickbait≤4, promo≤4, and at least one of pride_humanity/pride_russia/inspiration/
-   beauty/interestingness/surprise/uniqueness ≥9.
+1. Owner: deploy the new `evaluator.py` (`sudo bash deploy/install.sh`) and run the
+   one-time backfill once: `sudo -u newsevaluator ... evaluator.py --backfill`.
 2. Crawler-side change (separate repo): delete rejected news older than 3 days.
 3. Preparation stage (label «Подготовлено»): download illustrations with captions,
-   Russian retelling, HTML page, in a new evaluator-owned SQLite + media dir.
+   Russian retelling (generate fresh), HTML page, in a new evaluator-owned SQLite +
+   media dir.
 4. Publication stage (label «Опубликовано») — next project step, platforms TBD.
 5. Prompt calibration and soft profiles («Россия» / «Международное»).
 
 ## Open questions
 
-- Selection rule is strict: feed positivity averages ~3, so `default` will pass very
-  few items. Confirm this is intended vs adding a softer profile alongside it.
-- Retelling: generate fresh vs seed from the crawler's existing `news_translations`.
 - Publication platforms, formats, and credentials (deferred to the publication step).
 - Long-term model choice; deepseek-chat is only the test model (swap via env file).
+
+## Resolved
+
+- Strict `default` rule is intended: owner confirmed few items is fine (2026-07-23).
+- Retelling: generate fresh, do not reuse `news_translations` (owner, 2026-07-23).
 
 ## Deferred
 
